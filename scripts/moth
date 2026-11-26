@@ -12,6 +12,18 @@ need_root() { [[ $EUID -eq 0 ]] || die "This command needs root. Try: sudo moth 
 cd "$MOTH_DIR"
 dc() { docker compose "$@"; }
 env_get() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+env_set() { # idempotent KEY=VALUE update of .env
+  local tmp; tmp="$(mktemp)"
+  if grep -qE "^$1=" .env; then awk -v k="$1" -v v="$2" -F= '$1==k {print k"="v; next} {print}' .env >"$tmp" && cat "$tmp" >.env
+  else printf '%s=%s\n' "$1" "$2" >>.env; fi
+  rm -f -- "$tmp"
+}
+set_profile() { # set_profile NAME on|off — maintains COMPOSE_PROFILES
+  local cur new p; cur="$(env_get COMPOSE_PROFILES)"; new=""
+  for p in ${cur//,/ }; do [[ "$p" == "$1" ]] || new="${new:+$new,}$p"; done
+  [[ "$2" == on ]] && new="${new:+$new,}$1"
+  env_set COMPOSE_PROFILES "$new"
+}
 
 usage() {
   cat <<EOF
@@ -25,6 +37,7 @@ ${R}moth${Z} — manage your MOTH installation (${MOTH_DIR})
   ${B}restore${Z} <file>      Restore a database dump (stops the bot during restore)
   ${B}config${Z}              Edit ${MOTH_DIR}/.env, then restart
   ${B}url${Z}                 Print the dashboard and bot invite URLs
+  ${B}ai${Z}                  Show AI status · ${B}ai key${Z} [openai|anthropic|openrouter] · ${B}ai local${Z} [model] · ${B}ai off${Z}
   ${B}doctor${Z}              Diagnose common problems
   ${B}version${Z}             Installed version
   ${B}uninstall${Z}           Remove MOTH (asks before deleting data)
@@ -96,6 +109,59 @@ case "$cmd" in
     dc ps --format '{{.Service}} {{.State}}' | while read -r s st; do [[ "$st" == running ]] && ok "$s running" || bad "$s $st"; done
     df -Pk . | awk 'NR==2 { if ($4 < 1048576) print "'"${Y}"'!'"${Z}"' Less than 1 GB free disk space" }'
     ;;
+  ai)
+    sub="${1:-status}"; shift || true
+    case "$sub" in
+      status)
+        p="$(env_get AI_PROVIDER)"
+        if [[ -z "$p" || "$p" == none ]]; then echo "AI: ${Y}not configured${Z} — run ${B}sudo moth ai key${Z} (API key) or ${B}sudo moth ai local${Z} (free, no key)"
+        else echo "AI: ${G}${p}${Z} · model $(env_get AI_MODEL)$( [[ -n "$(env_get AI_API_KEY)" ]] && echo " · key set")"
+          [[ "$p" == ollama ]] && { dc exec -T ollama ollama list 2>/dev/null || echo "${Y}!${Z} ollama container not running"; }
+        fi
+        echo "Servers can also add their own provider in the dashboard → AI Settings." ;;
+      key)
+        need_root ai
+        prov="${1:-}"
+        if [[ -z "$prov" ]]; then read -r -p "Provider — 1) OpenAI  2) Anthropic  3) OpenRouter [1]: " c </dev/tty; case "$c" in 2) prov=anthropic ;; 3) prov=openrouter ;; *) prov=openai ;; esac; fi
+        case "$prov" in openai) url=https://platform.openai.com/api-keys; model=gpt-4.1-mini ;; anthropic) url=https://console.anthropic.com/settings/keys; model=claude-sonnet-5-5 ;; openrouter) url=https://openrouter.ai/keys; model=openrouter/auto ;; *) die "Unknown provider $prov (openai, anthropic, openrouter)" ;; esac
+        echo "Get a key at ${B}${url}${Z}"
+        read -r -s -p "API key: " key </dev/tty; echo
+        [[ -n "$key" ]] || die "No key entered."
+        case "$prov" in
+          openai) code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H "Authorization: Bearer $key" https://api.openai.com/v1/models) ;;
+          anthropic) code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H "x-api-key: $key" -H "anthropic-version: 2023-06-01" https://api.anthropic.com/v1/models) ;;
+          openrouter) code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H "Authorization: Bearer $key" https://openrouter.ai/api/v1/auth/key) ;;
+        esac
+        [[ "$code" == 401 || "$code" == 403 ]] && die "The provider rejected that key."
+        [[ "$code" == 200 ]] && echo "${G}✓${Z} Key accepted" || echo "${Y}!${Z} Couldn't verify the key (HTTP $code); saving anyway."
+        read -r -p "Model [$model]: " m </dev/tty; model="${m:-$model}"
+        if [[ "$prov" == openrouter ]]; then env_set AI_PROVIDER openai-compatible; env_set AI_BASE_URL https://openrouter.ai/api/v1; else env_set AI_PROVIDER "$prov"; env_set AI_BASE_URL ""; fi
+        env_set AI_API_KEY "$key"; env_set AI_MODEL "$model"; env_set AI_TIMEOUT_MS ""; env_set MOTH_LOCAL_AI ""
+        set_profile local-ai off
+        dc up -d --remove-orphans >/dev/null && dc up -d --force-recreate bot dashboard
+        echo "${G}✓${Z} AI enabled: $prov · $model" ;;
+      local)
+        need_root ai
+        ram=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+        def=llama3.2:1b; [[ $ram -ge 3800 ]] && def=llama3.2:3b; [[ $ram -ge 7500 ]] && def=llama3.1:8b
+        model="${1:-$def}"
+        [[ $ram -lt 3800 ]] && echo "${Y}!${Z} ${ram} MB RAM: local AI will be slow and basic. An API key gives far better results."
+        env_set AI_PROVIDER ollama; env_set AI_MODEL "$model"; env_set AI_BASE_URL http://ollama:11434/v1; env_set AI_API_KEY ""; env_set AI_TIMEOUT_MS 600000; env_set MOTH_LOCAL_AI 1
+        set_profile local-ai on
+        dc up -d ollama
+        for _ in $(seq 1 30); do dc exec -T ollama ollama list >/dev/null 2>&1 && break; sleep 2; done
+        echo "Downloading ${model} (one-time)…"
+        dc exec -T ollama ollama pull "$model"
+        dc up -d --force-recreate bot dashboard
+        echo "${G}✓${Z} Free local AI enabled: $model (no API key needed)" ;;
+      off)
+        need_root ai
+        env_set AI_PROVIDER none; env_set AI_API_KEY ""; env_set MOTH_LOCAL_AI ""
+        set_profile local-ai off
+        dc up -d --remove-orphans >/dev/null && dc up -d --force-recreate bot dashboard
+        echo "AI disabled. The Architect keeps working with its built-in designer." ;;
+      *) die "Usage: moth ai [status|key|local [model]|off]" ;;
+    esac ;;
   uninstall)
     need_root "$cmd"
     read -r -p "Stop and remove MOTH containers? [y/N] " a </dev/tty; [[ "$a" =~ ^[Yy] ]] || exit 0

@@ -2,7 +2,7 @@ import http from "node:http";
 import { ChannelType, PermissionFlagsBits, type Guild } from "discord.js";
 import { z } from "zod";
 import {
-  AUTOMATION_GENERATOR_PROMPT, COMMAND_GENERATOR_PROMPT, analyzeServer, automationSchema, automations, generatedAutomationSchema, generatedCommandSchema,
+  analyzeServer, automationSchema, automations, generateAutomation, generateCommand,
   getDb, getGuildConfig, messageTemplateSchema, recordAIUsage, resolveAIClient, safeEqual, publishEvent, AIClient, decryptSecret, aiProviders,
 } from "@moth/core";
 import { and, eq } from "drizzle-orm";
@@ -175,14 +175,18 @@ function serverIds(guild: Guild) {
 }
 route("POST", "/v1/guilds/:guildId/ai/generate-command", async ({ guild, body }) => {
   const ai = await aiFor(guild);
-  const { data, usage } = await ai.completeJson([{ role: "system", content: COMMAND_GENERATOR_PROMPT }, { role: "user", content: `${serverIds(guild)}\n\nRequest: ${String(body.prompt).slice(0, 2000)}` }], generatedCommandSchema, { maxTokens: 1500 });
+  const { data, usage } = await generateCommand(ai, String(body.prompt).slice(0, 2000), serverIds(guild));
   await recordAIUsage({ guildId: guild.id, userId: String(body.actorId ?? ""), feature: "generate_command", inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, providerKind: ai.config.kind });
   if (BUILTIN_NAMES.has(data.name)) data.name = `${data.name}-custom`.slice(0, 32);
   return data;
 });
 route("POST", "/v1/guilds/:guildId/ai/generate-automation", async ({ guild, body }) => {
   const ai = await aiFor(guild);
-  const { data, usage } = await ai.completeJson([{ role: "system", content: AUTOMATION_GENERATOR_PROMPT }, { role: "user", content: `${serverIds(guild)}\n\nRequest: ${String(body.prompt).slice(0, 2000)}` }], generatedAutomationSchema, { maxTokens: 1500 });
+  const byName = <T extends { id: string; name: string }>(list: Iterable<T>, n: string) => { const k = n.replace(/^[#@]/, "").toLowerCase(); for (const x of list) if (x.name.toLowerCase() === k || x.name.toLowerCase().includes(k)) return x.id; return null; };
+  const { data, usage } = await generateAutomation(ai, String(body.prompt).slice(0, 2000), serverIds(guild), {
+    channel: (n) => byName(guild.channels.cache.filter((c) => c.isTextBased()).values(), n),
+    role: (n) => byName(guild.roles.cache.filter((r) => !r.managed && r.editable).values(), n),
+  });
   await recordAIUsage({ guildId: guild.id, userId: String(body.actorId ?? ""), feature: "generate_automation", inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, providerKind: ai.config.kind });
   return data;
 });

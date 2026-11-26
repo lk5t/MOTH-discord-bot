@@ -59,6 +59,22 @@ services:
       postgres: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
 
+  # Free local AI (no API key) — enabled with COMPOSE_PROFILES=local-ai. Managed with `moth ai`.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local-ai"]
+    restart: unless-stopped
+    environment:
+      OLLAMA_CONTEXT_LENGTH: "8192"   # room for the Architect's server description + blueprint
+      OLLAMA_KEEP_ALIVE: "30m"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
   # Automatic HTTPS reverse proxy — enabled with COMPOSE_PROFILES=https when a domain is configured.
   caddy:
     image: caddy:2-alpine
@@ -80,3 +96,4 @@ volumes:
   moth-db:
   caddy-data:
   caddy-config:
+  ollama-data:

@@ -85,6 +85,7 @@ export class AIClient {
       } catch (err) {
         lastErr = err;
         if (!(err instanceof AIError) || !err.retryable) throw err;
+        if (this.config.kind === "ollama" && /timed out/.test(err.message)) throw err;
         await new Promise((r) => setTimeout(r, 800 * 2 ** attempt));
       }
     }
@@ -101,7 +102,7 @@ export class AIClient {
       max_tokens: opts.maxTokens ?? 1024,
       temperature: opts.temperature ?? this.config.temperature ?? 0.4,
     };
-    if (opts.json && this.config.kind !== "ollama") body.response_format = { type: "json_object" };
+    if (opts.json) body.response_format = { type: "json_object" };
     let data;
     try {
       data = await postJson(`${base}/chat/completions`, body, headers, this.config.timeoutMs ?? 120_000, opts.signal);

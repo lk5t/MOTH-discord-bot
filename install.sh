@@ -13,6 +13,11 @@
 #                          DISCORD_CLIENT_SECRET, MOTH_OWNER_IDS from the environment
 #    --build               Build images locally instead of pulling them
 #    --no-start            Configure everything but don't start services
+#    --local-ai [model]    Choose the free local AI model (default: picked by RAM)
+#    --no-ai               Don't run local AI (MOTH uses its built-in designer)
+#  By default MOTH sets up a free local AI automatically — no API key needed.
+#  AI via environment: AI_PROVIDER=openai|anthropic|openai-compatible + AI_API_KEY
+#  (+ optional AI_MODEL, AI_BASE_URL), or MOTH_LOCAL_AI=1 [MOTH_LOCAL_MODEL=...].
 #
 #  Re-running the installer upgrades an existing installation and keeps .env,
 #  the database and backups.
@@ -27,6 +32,8 @@ PORT="${DASHBOARD_PORT:-3000}"
 UNATTENDED="${MOTH_UNATTENDED:-0}"
 FORCE_BUILD="${MOTH_BUILD:-0}"
 NO_START=0
+AI_MODE="${MOTH_LOCAL_AI:+local}"   # "", key, local, none
+LOCAL_MODEL="${MOTH_LOCAL_MODEL:-}"
 LOG_FILE="/var/log/moth-install.log"
 MIN_RAM_MB=900
 MIN_DISK_GB=4
@@ -40,6 +47,8 @@ while [[ $# -gt 0 ]]; do
     --unattended|-y) UNATTENDED=1; shift ;;
     --build) FORCE_BUILD=1; shift ;;
     --no-start) NO_START=1; shift ;;
+    --local-ai) AI_MODE=local; if [[ -n "${2:-}" && "${2:0:1}" != "-" ]]; then LOCAL_MODEL="$2"; shift; fi; shift ;;
+    --no-ai) AI_MODE=none; shift ;;
     -h|--help) sed -n '2,22p' "$0" 2>/dev/null || true; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
@@ -47,7 +56,7 @@ done
 
 # ─── Output helpers ───
 if [[ -t 1 ]]; then C_R=$'\e[38;5;161m'; C_G=$'\e[32m'; C_Y=$'\e[33m'; C_D=$'\e[2m'; C_B=$'\e[1m'; C_0=$'\e[0m'; else C_R=; C_G=; C_Y=; C_D=; C_B=; C_0=; fi
-STEP=0; TOTAL=13
+STEP=0; TOTAL=14
 step() { STEP=$((STEP + 1)); printf "\n%s[%2d/%d]%s %s%s%s\n" "$C_R" "$STEP" "$TOTAL" "$C_0" "$C_B" "$*" "$C_0"; }
 info() { printf "      %s\n" "$*"; }
 ok()   { printf "      %s✓%s %s\n" "$C_G" "$C_0" "$*"; }
@@ -251,27 +260,90 @@ done
 set_env MOTH_VERSION "$IMAGE_VERSION"
 ok "Secrets generated and stored in $ENV_FILE (mode 600)"
 
-# ─── 7. Persistent storage ───
+# ─── 7. AI provider ───
+step "Setting up AI"
+# Picks a local model that fits in memory (CPU inference; bigger = smarter but slower).
+default_local_model() { if [[ "$RAM_MB" -ge 7500 ]]; then echo "llama3.1:8b"; elif [[ "$RAM_MB" -ge 3800 ]]; then echo "llama3.2:3b"; else echo "llama3.2:1b"; fi; }
+validate_key() { # validate_key PROVIDER KEY → 0 ok / 1 rejected / 2 unknown
+  local code
+  case "$1" in
+    openai) code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H "Authorization: Bearer $2" https://api.openai.com/v1/models) ;;
+    anthropic) code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H "x-api-key: $2" -H "anthropic-version: 2023-06-01" https://api.anthropic.com/v1/models) ;;
+    openrouter) code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H "Authorization: Bearer $2" https://openrouter.ai/api/v1/auth/key) ;;
+    *) return 2 ;;
+  esac
+  [[ "$code" == 200 ]] && return 0; [[ "$code" == 401 || "$code" == 403 ]] && return 1; return 2
+}
+CUR_AI="$(get_env AI_PROVIDER)"
+if [[ -z "$AI_MODE" ]]; then
+  if [[ -n "${AI_API_KEY:-}" && -n "${AI_PROVIDER:-}" && "${AI_PROVIDER:-}" != none ]]; then AI_MODE=key
+  elif [[ $UPGRADE == 1 && -n "$CUR_AI" && "$CUR_AI" != none ]]; then AI_MODE=keep
+  elif [[ "$RAM_MB" -ge 3000 ]]; then AI_MODE=local   # zero-config default: free local AI, no key
+  else AI_MODE=none; fi
+fi
+
+case "$AI_MODE" in
+  key)
+    PROV="${AI_PROVIDER:-}"; KEY="${AI_API_KEY:-}"; MODEL="${AI_MODEL:-}"; BASE="${AI_BASE_URL:-}"
+    if [[ -z "$KEY" ]]; then
+      ask PCHOICE "Provider: 1) OpenAI  2) Anthropic  3) OpenRouter (many models, one key)" "1"
+      case "$PCHOICE" in 2) PROV=anthropic ;; 3) PROV=openrouter ;; *) PROV=openai ;; esac
+      info "Get a key: $(case $PROV in openai) echo https://platform.openai.com/api-keys ;; anthropic) echo https://console.anthropic.com/settings/keys ;; openrouter) echo https://openrouter.ai/keys ;; esac)"
+      for _ in 1 2 3; do
+        ask KEY "API key (input hidden)" "" secret
+        [[ -z "$KEY" ]] && break
+        if validate_key "$PROV" "$KEY"; then ok "API key accepted"; break
+        else rc=$?; [[ $rc == 1 ]] && { warn "That key was rejected — try again (or leave empty to skip)."; KEY=""; continue; }; warn "Couldn't verify the key right now; saving it anyway."; break; fi
+      done
+    fi
+    if [[ -z "$KEY" ]]; then warn "No key entered — skipping AI. Add one later with: moth ai key"; set_env AI_PROVIDER none
+    else
+      case "$PROV" in
+        openrouter) set_env AI_PROVIDER openai-compatible; BASE="${BASE:-https://openrouter.ai/api/v1}"; MODEL="${MODEL:-openrouter/auto}" ;;
+        anthropic) set_env AI_PROVIDER anthropic; MODEL="${MODEL:-claude-sonnet-5-5}" ;;
+        openai) set_env AI_PROVIDER openai; MODEL="${MODEL:-gpt-4.1-mini}" ;;
+        *) set_env AI_PROVIDER "$PROV"; [[ -n "$MODEL" ]] || die "AI_MODEL is required for provider $PROV." ;;
+      esac
+      set_env AI_API_KEY "$KEY"; set_env AI_MODEL "$MODEL"; set_env AI_BASE_URL "$BASE"; set_env MOTH_LOCAL_AI ""
+      ok "AI provider: ${PROV} · ${MODEL} (key stored in $ENV_FILE, mode 600)"
+    fi ;;
+  local)
+    LOCAL_MODEL="${LOCAL_MODEL:-$(get_env AI_MODEL)}"
+    [[ "$(get_env AI_PROVIDER)" == ollama && -n "$LOCAL_MODEL" ]] || LOCAL_MODEL="${MOTH_LOCAL_MODEL:-$(default_local_model)}"
+    set_env AI_PROVIDER ollama; set_env AI_MODEL "$LOCAL_MODEL"; set_env AI_BASE_URL "http://ollama:11434/v1"; set_env AI_API_KEY ""
+    set_env AI_TIMEOUT_MS 600000; set_env MOTH_LOCAL_AI 1
+    [[ "$RAM_MB" -lt 3800 ]] && warn "Only ${RAM_MB} MB RAM — local AI will be slow and basic. An API key gives much better results."
+    ok "Free local AI with Ollama · model ${LOCAL_MODEL} (downloaded when MOTH starts)" ;;
+  keep) ok "Keeping existing AI provider ($CUR_AI · $(get_env AI_MODEL))" ;;
+  *) [[ -z "$CUR_AI" ]] && set_env AI_PROVIDER none
+     if [[ "$RAM_MB" -lt 3000 ]]; then ok "This server has ${RAM_MB} MB RAM — too little for local AI, so MOTH uses its built-in designer (no key needed)"
+     else ok "AI skipped — MOTH uses its built-in designer"; fi ;;
+esac
+
+# ─── 8. Persistent storage ───
 step "Configuring persistent storage"
 mkdir -p "$MOTH_DIR/backups"; chmod 700 "$MOTH_DIR/backups"
 ok "Database volume: moth_moth-db · backups: $MOTH_DIR/backups"
 
-# ─── 8 & 9. Bot service & dashboard ───
+# ─── 9 & 10. Bot service & dashboard ───
 step "Preparing the bot service"
 ok "Bot runs migrations on start, restarts automatically and reports health every 15s"
 step "Preparing the dashboard"
 if [[ -n "$DOMAIN" ]]; then
-  set_env MOTH_DOMAIN "$DOMAIN"; set_env COMPOSE_PROFILES "https"; set_env DASHBOARD_BIND "127.0.0.1"
+  set_env MOTH_DOMAIN "$DOMAIN"; set_env DASHBOARD_BIND "127.0.0.1"
   set_env DASHBOARD_URL "https://${DOMAIN}"
 else
-  set_env MOTH_DOMAIN ""; set_env COMPOSE_PROFILES ""; set_env DASHBOARD_BIND "0.0.0.0"; set_env DASHBOARD_PORT "$PORT"
+  set_env MOTH_DOMAIN ""; set_env DASHBOARD_BIND "0.0.0.0"; set_env DASHBOARD_PORT "$PORT"
   CUR_URL="$(get_env DASHBOARD_URL)"
   [[ -z "$CUR_URL" || "$CUR_URL" == "http://localhost:3000" ]] && set_env DASHBOARD_URL "http://${PUBLIC_IP}:${PORT}"
 fi
 DASH_URL="$(get_env DASHBOARD_URL)"
+PROFILES=""; [[ -n "$DOMAIN" ]] && PROFILES="https"
+[[ "$(get_env MOTH_LOCAL_AI)" == 1 ]] && PROFILES="${PROFILES:+$PROFILES,}local-ai"
+set_env COMPOSE_PROFILES "$PROFILES"
 ok "Dashboard URL: $DASH_URL"
 
-# ─── 10. Networking ───
+# ─── 11. Networking ───
 step "Configuring networking"
 open_port() {
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then run ufw allow "$1"/tcp; ok "ufw: opened $1/tcp"
@@ -288,7 +360,7 @@ else
   ok "Dashboard exposed on port $PORT"
 fi
 
-# ─── 11. Automatic startup ───
+# ─── 12. Automatic startup ───
 step "Configuring automatic startup"
 install -m 0755 "$MOTH_DIR/scripts/moth" /usr/local/bin/moth
 if [[ $HAS_SYSTEMD == 1 ]]; then
@@ -320,7 +392,7 @@ else
 fi
 ok "Management CLI installed: moth"
 
-# ─── 12. Start services ───
+# ─── 13. Start services ───
 step "Starting MOTH"
 cd "$MOTH_DIR"
 if [[ $NO_START == 1 ]]; then warn "--no-start given; run 'moth start' when ready."; else
@@ -334,9 +406,16 @@ if [[ $NO_START == 1 ]]; then warn "--no-start given; run 'moth start' when read
   [[ -n "$DOMAIN" ]] && { run docker compose pull --quiet caddy || true; }
   run docker compose up -d --remove-orphans || die "Failed to start services."
   ok "Containers started"
+  if [[ "$(get_env MOTH_LOCAL_AI)" == 1 ]]; then
+    M="$(get_env AI_MODEL)"
+    info "Downloading local AI model ${M} (one-time, can take several minutes)…"
+    for _ in $(seq 1 30); do docker compose exec -T ollama ollama list >/dev/null 2>&1 && break; sleep 2; done
+    if docker compose exec -T ollama ollama pull "$M" >>"$LOG_FILE" 2>&1; then ok "Local AI model ${M} ready"
+    else warn "Model download failed — retry later with: moth ai local ${M}"; fi
+  fi
 fi
 
-# ─── 13. Verify ───
+# ─── 14. Verify ───
 step "Verifying installation"
 if [[ $NO_START == 0 ]]; then
   DP="$(get_env DASHBOARD_PORT)"; HEALTH_URL="http://127.0.0.1:${DP:-3000}/api/health"

@@ -35,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/lk5t/MOTH-discord-bot/main/install.
 | **Tickets** | Multiple panels (buttons or dropdowns), categories with their own staff roles, pre-ticket forms, private channels, claiming, assignment, priorities, close/reopen, HTML transcripts (posted to a channel and DMed to the user), archive or auto-delete, auto-close for inactive tickets, statistics and an optional AI first response. |
 | **Automation** | A visual workflow builder (trigger → conditions → actions → delays). Triggers: joins, leaves, messages, reactions, roles, voice, schedules (cron), level-ups, tickets and boosts. Also welcome/goodbye messages and DMs, auto-roles, reaction/button/dropdown role menus, milestones, dry-run testing and a run log. You can describe an automation in plain language and MOTH builds it. |
 | **Custom commands** | Slash commands and message triggers with an embed builder, placeholders (`{user}`, `{args.x}`, `{random:a\|b}` …), options, conditional responses, follow-up actions, role and channel permissions, cooldowns, import/export, a test preview and AI generation. |
-| **AI** | Works with OpenAI, Anthropic, any OpenAI-compatible endpoint (OpenRouter, Groq, vLLM, LM Studio…) or a local Ollama. Features: `/ask`, mention chat and AI channels, `/summarize`, `/modassist`, AI support replies, command and automation generation, and server analysis. Personality is configurable, with per-user limits. **The AI never takes administrative actions on its own; every change is a proposal that an authorised human approves.** |
+| **AI** | Works out of the box with a free local model (no API key). Also supports OpenAI, Anthropic, any OpenAI-compatible endpoint (OpenRouter, Groq, vLLM, LM Studio…) or a local Ollama. Features: `/ask`, mention chat and AI channels, `/summarize`, `/modassist`, AI support replies, command and automation generation, and server analysis. Personality is configurable, with per-user limits. **The AI never takes administrative actions on its own; every change is a proposal that an authorised human approves.** |
 | **Community** | XP and levels (message and voice, multipliers, role rewards), leaderboards, profiles, achievements and badges, daily rewards with streaks, economy with a shop, giveaways with requirements, polls, and member milestones. |
 | **Analytics** | Member growth, message activity, an activity heatmap, top channels, voice time, moderation, tickets, security, automation and AI usage, live and historical. |
 | **Dashboard** | A dark interface with crimson accents and 12 sections: Overview, Architect, Moderation, Security, Tickets, Automation, Commands, Members, Analytics, AI Settings, Server Settings and System. Discord OAuth login, multi-server switching, role-based access, live updates (SSE), confirmation dialogs and a responsive layout. Changes sync both ways between Discord and the dashboard. |
@@ -84,13 +84,13 @@ The installer:
 3. installs the dependencies
 4. installs Docker and Docker Compose if they're missing
 5. downloads the latest stable release (or `main`)
-6. prompts for and validates your Discord credentials, generates secrets, and configures PostgreSQL
+6. prompts for and validates your Discord credentials, generates secrets, configures PostgreSQL and sets up free local AI (no key needed)
 7. sets up persistent volumes and a backup directory
 8. sets up the bot service
 9. sets up the dashboard
 10. configures networking: firewall rules, plus automatic HTTPS through Caddy if you give it a domain
 11. installs a `moth.service` systemd unit and the `moth` CLI
-12. pulls the images (or builds them locally) and starts everything
+12. pulls the images (or builds them locally), downloads the local AI model and starts everything
 13. checks that the database, dashboard and Discord connection are healthy
 
 When it finishes, **add the redirect URL it prints** (`<dashboard-url>/api/auth/callback`) under **OAuth2 → Redirects** in the Developer Portal, then invite the bot with the link it prints.
@@ -103,7 +103,7 @@ curl -fsSL https://raw.githubusercontent.com/lk5t/MOTH-discord-bot/main/install.
   bash -s -- --unattended --domain moth.example.com
 ```
 
-Options: `--dir`, `--version <tag>`, `--domain`, `--port`, `--unattended`, `--build` (build images locally), `--no-start`.
+Options: `--dir`, `--version <tag>`, `--domain`, `--port`, `--unattended`, `--build` (build images locally), `--no-start`, `--no-ai`, `--local-ai <model>`.
 
 #### Creating a new server with the Architect
 
@@ -138,9 +138,20 @@ MOTH also takes daily configuration backups of each server's Discord structure a
 
 ## AI providers
 
-Each server can add its own provider under **AI Settings**. Keys are encrypted at rest with AES-256-GCM and never sent back to the browser. The instance owner can set a default for all servers on the **System** page, or with `AI_PROVIDER` / `AI_MODEL` / `AI_API_KEY` / `AI_BASE_URL` in `.env`. For a local model, run Ollama on the host and use `http://host.docker.internal:11434/v1`.
+**No API key is needed.** On servers with 3 GB+ RAM, the installer automatically runs a free local AI model (Ollama) next to MOTH and picks a model size that fits your memory. On smaller servers MOTH uses its built-in designer and audit, which need no AI at all.
 
-Without any provider, the Architect still works through MOTH's built-in designer and server audit. Free-form requests, chat and generation need a provider.
+With local AI, the Architect uses the fast built-in designer for New server, Smart Improve and Full Redesign. It uses the local model for free-form quick edits, `/ask`, chat, summaries and command or automation generation.
+
+Optional, if you ever want stronger AI:
+
+```bash
+sudo moth ai             # show what's running
+sudo moth ai key         # use an OpenAI / Anthropic / OpenRouter key instead
+sudo moth ai local       # switch back to the free local model (optionally: moth ai local llama3.1:8b)
+sudo moth ai off
+```
+
+Each server can also add its own provider under **AI Settings** in the dashboard. Keys are encrypted at rest with AES-256-GCM and never sent back to the browser.
 
 ## Security model
 

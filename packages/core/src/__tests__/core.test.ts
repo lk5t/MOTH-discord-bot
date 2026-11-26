@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildPlan, designFromPrompt, analyzeServer, parseDuration, renderTemplate, levelFromXp, xpForLevel,
   defaultGuildConfig, parseGuildConfig, encryptSecret, decryptSecret, extractJson, matchesTrigger,
-  customCommandSchema, automationSchema, BUILTIN_TEMPLATES, builtinTemplate, snapshotToBlueprint, toBits, fromBits,
+  customCommandSchema, automationSchema, cronFromText, BUILTIN_TEMPLATES, builtinTemplate, snapshotToBlueprint, toBits, fromBits,
   type GuildSnapshot,
 } from "../index.js";
 
@@ -142,4 +142,12 @@ test("custom command & automation schemas apply defaults", () => {
   const a = automationSchema.parse({ trigger: { type: "member_join" }, steps: [{ kind: "action", action: { type: "add_role", roleId: "1" } }] });
   assert.equal(a.cooldownSeconds, 0);
   assert.ok(a.steps[0].id);
+});
+
+test("schedule phrases become cron expressions", () => {
+  assert.equal(cronFromText("every friday at 6pm post a reminder"), "0 18 * * 5");
+  assert.equal(cronFromText("daily at 09:30"), "30 9 * * *");
+  assert.equal(cronFromText("every monday and thursday at 8 pm"), "0 20 * * 1,4");
+  assert.equal(cronFromText("on weekdays at 7am"), "0 7 * * 1-5");
+  assert.equal(cronFromText("when someone says hello"), null);
 });

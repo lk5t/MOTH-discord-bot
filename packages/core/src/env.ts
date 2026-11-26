@@ -16,7 +16,7 @@ export const baseEnvSchema = z.object({
   /** Comma separated Discord user IDs with platform-owner (System page) access. */
   MOTH_OWNER_IDS: z.string().default(""),
   /** Optional global AI provider (used when a guild has none configured). */
-  AI_PROVIDER: z.enum(["openai", "anthropic", "ollama", "openai-compatible", "none"]).default("none"),
+  AI_PROVIDER: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["openai", "anthropic", "ollama", "openai-compatible", "none"]).default("none")),
   AI_BASE_URL: z.string().optional(),
   AI_MODEL: z.string().optional(),
   AI_API_KEY: z.string().optional(),

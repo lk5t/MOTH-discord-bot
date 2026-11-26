@@ -19,13 +19,14 @@ export async function resolveAIClient(guildId: string | null, providerId?: strin
   if (!row) [row] = await db.select().from(aiProviders).where(and(isNull(aiProviders.guildId), eq(aiProviders.isDefault, true))).limit(1);
   if (row) {
     return new AIClient({
-      kind: row.kind, model: row.model, baseUrl: row.baseUrl, temperature: row.temperature,
+      kind: row.kind, model: row.model, baseUrl: row.baseUrl, temperature: row.temperature, timeoutMs: row.kind === "ollama" ? 600_000 : undefined,
       apiKey: row.apiKeyEnc ? decryptSecret(row.apiKeyEnc) : null,
     });
   }
   const kind = process.env.AI_PROVIDER as AIProviderKind | "none" | undefined;
   if (kind && kind !== "none" && process.env.AI_MODEL) {
-    return new AIClient({ kind, model: process.env.AI_MODEL, baseUrl: process.env.AI_BASE_URL, apiKey: process.env.AI_API_KEY });
+    const timeoutMs = Number(process.env.AI_TIMEOUT_MS) || (kind === "ollama" ? 600_000 : undefined);
+    return new AIClient({ kind, model: process.env.AI_MODEL, baseUrl: process.env.AI_BASE_URL || undefined, apiKey: process.env.AI_API_KEY || undefined, timeoutMs });
   }
   return null;
 }

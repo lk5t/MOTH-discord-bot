@@ -107,7 +107,13 @@ export async function architectTurn(guild: Guild, session: Session, userMessage:
   let analysis: ServerAnalysis | null = (session.analysis as ServerAnalysis | null) ?? null;
   const audit = mode === "improve" || mode === "redesign" ? analyzeServer(snap, cfg) : null;
 
-  if (ai) {
+  // Small local models are slow on CPU and weak at whole-server design: use the built-in
+  // designer for those modes, and the local model only for free-form quick edits.
+  const local = ai?.config.kind === "ollama";
+  const quickHeuristic = mode === "quick" ? heuristicQuickEdit(userMessage, snap) : null;
+  const useAI = !!ai && !(local && (mode !== "quick" || quickHeuristic));
+
+  if (ai && useAI) {
     const context = [
       `CURRENT SERVER:\n${describeSnapshot(snap)}`,
       audit ? `AUTOMATED AUDIT (score ${audit.score}/100):\n${audit.findings.map((f) => `- [${f.severity}] ${f.title}: ${f.detail}`).join("\n")}` : "",
@@ -155,7 +161,7 @@ export async function architectTurn(guild: Guild, session: Session, userMessage:
       blueprint = blueprintSchema.parse(audit!.suggestions);
       reply = prefix + `${audit!.summary}\n\nI've proposed fixes for the issues I can address automatically. Ask me to change anything — e.g. "also add a ticket system".`;
     } else {
-      const q = heuristicQuickEdit(userMessage, snap);
+      const q = quickHeuristic ?? heuristicQuickEdit(userMessage, snap);
       if (q) {
         const merged = blueprint ? mergeBlueprints(blueprint, blueprintSchema.parse(q.blueprint)) : blueprintSchema.parse(q.blueprint);
         blueprint = merged; reply = prefix + q.reply;

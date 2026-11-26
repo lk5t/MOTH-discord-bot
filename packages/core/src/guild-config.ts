@@ -202,7 +202,7 @@ export const guildConfigSchema = z.object({
   }).prefault({}),
 
   ai: z.object({
-    enabled: z.boolean().default(false),
+    enabled: z.boolean().default(true),
     providerId: z.string().nullable().default(null),
     personality: z.object({
       name: z.string().default("MOTH"),

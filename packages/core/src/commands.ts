@@ -37,7 +37,10 @@ export type CustomCommandDefinition = z.infer<typeof customCommandSchema>;
 
 export const commandNameSchema = z.string().regex(/^[a-z0-9_-]{1,32}$/, "Lowercase letters, numbers, - and _ only (max 32)");
 
-export const generatedCommandSchema = z.object({ name: commandNameSchema, definition: customCommandSchema });
+export const generatedCommandSchema = z.object({ name: commandNameSchema, definition: customCommandSchema }).refine(
+  (c) => !!(c.definition.response.content?.trim() || c.definition.response.embed?.description?.trim() || c.definition.response.embed?.title?.trim()),
+  { message: "definition.response must include non-empty content (e.g. {\"content\": \"...\"})", path: ["definition", "response"] },
+);
 
 export const commandExportSchema = z.object({
   moth: z.literal("commands"),
