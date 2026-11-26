@@ -235,3 +235,61 @@ test("recommendations clear once the essentials pack is applied", () => {
   const after = setupRecommendations(merge(c, p.config(ids, c)));
   assert.ok(!after.some((r) => ["logs", "logging", "automod", "security"].includes(r.key)));
 });
+
+// ───────── Layout order & verification gate ─────────
+import { categoryRank, organiseBlueprint } from "../architect/organise.js";
+import { blueprintSchema } from "../architect/blueprint.js";
+
+test("organise puts Start Here first and staff last", () => {
+  const bp = organiseBlueprint(blueprintSchema.parse({ categories: [
+    { key: "s", name: "🛡️ Staff", channels: [{ name: "mod-chat", type: "text" }] },
+    { key: "v", name: "🔊 Voice", channels: [{ name: "Lounge", type: "voice" }] },
+    { key: "c", name: "💬 Community", channels: [{ name: "Gaming VC", type: "voice" }, { name: "general", type: "text" }] },
+    { key: "a", name: "📢 Announcements", channels: [{ name: "news", type: "text" }] },
+    { key: "h", name: "👋 Start Here", channels: [{ name: "roles", type: "text" }, { name: "rules", type: "text" }, { name: "welcome", type: "text" }] },
+  ] }));
+  assert.deepEqual(bp.categories.map((c) => c.key), ["h", "a", "c", "v", "s"]);
+  assert.deepEqual(bp.categories[0].channels.map((c) => c.name), ["welcome", "rules", "roles"]);
+  assert.deepEqual(bp.categories[2].channels.map((c) => c.name), ["general", "Gaming VC"]);
+  assert.equal(categoryRank("Archive"), 9);
+});
+
+test("edits move an existing Start Here category to the top", () => {
+  const snap = freshSnapshot();
+  snap.channels = [
+    { id: "300000000000000001", name: "Community", type: "category", parentId: null, position: 0, overwrites: [] },
+    { id: "300000000000000002", name: "Start Here", type: "category", parentId: null, position: 1, overwrites: [] },
+  ];
+  const plan = buildPlan(snap, { categories: [{ key: "m", name: "Music", channels: [{ name: "requests", type: "text" }] }] }, { mode: "quick", reorder: true });
+  const reorder = plan.ops.find((o) => o.kind === "channels.reorder") as { order: { ref: string; parent: string | null }[] } | undefined;
+  assert.ok(reorder, "expected a reorder op");
+  const cats = reorder!.order.filter((o) => o.parent === null).map((o) => o.ref);
+  assert.equal(cats[0], "id:300000000000000002");
+});
+
+test("verification hides every channel except #verify from unverified members", () => {
+  const snap = freshSnapshot();
+  snap.channels = [{ id: "300000000000000009", name: "old-chat", type: "text", parentId: null, position: 0, overwrites: [] }];
+  const plan = buildPlan(snap, {
+    roles: [{ key: "verified", name: "Verified" }],
+    categories: [
+      { key: "start", name: "Start Here", channels: [{ key: "verify", name: "verify", type: "text", readOnly: true }, { key: "rules", name: "rules", type: "text" }] },
+      { key: "staff", name: "Staff", private: true, channels: [{ name: "mod-chat", type: "text" }] },
+    ],
+    features: { verification: { mode: "button", channel: "verify", verifiedRole: "verified" } },
+  }, { mode: "create", prune: false });
+  const ow = (pred: (o: any) => boolean) => (plan.ops.find(pred) as any)?.overwrites as { target: string; allow: string[]; deny: string[] }[];
+  const view = (l: { target: string; allow: string[]; deny: string[] }[], t: string) => { const e = l?.find((o) => o.target === t); return e?.allow.includes("ViewChannel") ? "allow" : e?.deny.includes("ViewChannel") ? "deny" : "-"; };
+  const startCat = ow((o) => o.kind === "category.create" && o.ref === "chan:start");
+  assert.equal(view(startCat, "@everyone"), "deny");
+  assert.equal(view(startCat, "role:verified"), "allow");
+  const verify = ow((o) => o.kind === "channel.create" && o.ref === "chan:verify");
+  assert.equal(view(verify, "@everyone"), "allow");
+  assert.equal(view(verify, "role:verified"), "deny");
+  const rules = ow((o) => o.kind === "channel.create" && o.ref === "chan:rules");
+  assert.ok(!rules || view(rules, "@everyone") !== "allow");
+  const staff = ow((o) => o.kind === "category.create" && o.ref === "chan:staff");
+  assert.equal(view(staff, "role:verified"), "-", "staff stays private");
+  const old = ow((o) => o.kind === "channel.update" && o.channelId === "300000000000000009");
+  assert.equal(view(old, "@everyone"), "deny");
+});

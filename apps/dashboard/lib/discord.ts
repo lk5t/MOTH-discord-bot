@@ -6,9 +6,10 @@ const API = "https://discord.com/api/v10";
 export interface DiscordUser { id: string; username: string; global_name: string | null; avatar: string | null }
 export interface DiscordGuild { id: string; name: string; icon: string | null; owner: boolean; permissions: string }
 
-export function oauthUrl(state: string): string {
+export function oauthUrl(state: string, scope = "identify guilds"): string {
   const e = env();
-  const p = new URLSearchParams({ client_id: e.DISCORD_CLIENT_ID, redirect_uri: `${e.DASHBOARD_URL.replace(/\/$/, "")}/api/auth/callback`, response_type: "code", scope: "identify guilds", state, prompt: "none" });
+  const p = new URLSearchParams({ client_id: e.DISCORD_CLIENT_ID, redirect_uri: `${e.DASHBOARD_URL.replace(/\/$/, "")}/api/auth/callback`, response_type: "code", scope, state });
+  if (scope === "identify guilds") p.set("prompt", "none");
   return `https://discord.com/oauth2/authorize?${p}`;
 }
 

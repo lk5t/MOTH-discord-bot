@@ -1,6 +1,7 @@
 export * from "./env.js";
 export * from "./logger.js";
 export * from "./crypto.js";
+export * from "./oauth.js";
 export * from "./util.js";
 export * from "./guild-config.js";
 export * from "./events.js";

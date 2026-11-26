@@ -1,5 +1,5 @@
 import { ChannelType, type Guild, type GuildBasedChannel } from "discord.js";
-import type { GuildSnapshot, SnapshotChannelType } from "@moth/core";
+import { getGuildConfig, type GuildSnapshot, type SnapshotChannelType } from "@moth/core";
 
 const TYPE_MAP: Partial<Record<ChannelType, SnapshotChannelType>> = {
   [ChannelType.GuildText]: "text", [ChannelType.GuildVoice]: "voice", [ChannelType.GuildCategory]: "category",
@@ -24,7 +24,9 @@ export async function captureSnapshot(guild: Guild, activity?: Map<string, numbe
   }
   const members = guild.members.cache;
   const bots = [...members.values()].filter((m) => m.user.bot && m.id !== me.id).map((m) => ({ id: m.id, name: m.user.username, kickable: m.kickable }));
+  const v = (await getGuildConfig(guild.id).catch(() => null))?.verification;
   return {
+    verification: v?.enabled && v.verifiedRoleId && guild.roles.cache.has(v.verifiedRoleId) ? { roleId: v.verifiedRoleId, channelId: v.channelId } : null,
     id: guild.id, name: guild.name, iconUrl: guild.iconURL(), ownerId: guild.ownerId, memberCount: guild.memberCount,
     verificationLevel: guild.verificationLevel, botRoleId: me.roles.botRole?.id ?? null, botHighestPosition: me.roles.highest.position,
     roles: guild.roles.cache.map((r) => ({

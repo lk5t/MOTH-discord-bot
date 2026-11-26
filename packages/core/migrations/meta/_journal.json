@@ -15,6 +15,13 @@
       "when": 1795679345311,
       "tag": "0001_server_tools",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795683211453,
+      "tag": "0002_member_backups",
+      "breakpoints": true
     }
   ]
 }

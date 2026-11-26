@@ -1,6 +1,7 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, type Guild, type GuildMember, type PartialGuildMember } from "discord.js";
 import { getGuildConfig, renderTemplate } from "@moth/core";
-import { messagePayload, templateContext, ok, fail } from "../lib/embeds.js";
+import { messagePayload, templateContext, ok, fail, brandEmbed } from "../lib/embeds.js";
+import { env } from "../env.js";
 import { cid, type ComponentHandler } from "../commands/types.js";
 import { respond } from "../lib/util.js";
 import { log } from "../context.js";
@@ -49,7 +50,7 @@ export async function publishVerification(guild: Guild): Promise<string> {
 
 const captchas = new Map<string, { answer: number; at: number }>();
 
-async function grant(member: GuildMember): Promise<string | null> {
+export async function grant(member: GuildMember): Promise<string | null> {
   const cfg = await getGuildConfig(member.guild.id);
   if (!cfg.verification.verifiedRoleId) return "Verification isn't fully configured (no verified role).";
   if (member.roles.cache.has(cfg.verification.verifiedRoleId)) return "You're already verified.";
@@ -64,6 +65,15 @@ export const verifyComponents: ComponentHandler = {
     const cfg = await getGuildConfig(i.guildId);
     if (!cfg.verification.enabled) return respond(i, { embeds: [fail("Verification is disabled.")], ephemeral: true });
     if (action === "start") {
+      if (cfg.verification.mode === "oauth") {
+        if (cfg.verification.verifiedRoleId && i.member.roles.cache.has(cfg.verification.verifiedRoleId)) return respond(i, { embeds: [ok("You're already verified.")], ephemeral: true });
+        const url = `${env.DASHBOARD_URL.replace(/\/$/, "")}/api/verify/start?guild=${i.guildId}`;
+        return respond(i, {
+          embeds: [brandEmbed("Verify with Discord", "Sign in with Discord to get access. You'll be asked to allow MOTH to **join servers for you** — this lets the server staff bring you back automatically if this server is ever raided, deleted or moves. MOTH can't read your messages or DMs, and you can remove access any time in Discord → Settings → Authorized Apps.")],
+          components: [new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel("Verify with Discord").setEmoji("✅").setURL(url))],
+          ephemeral: true,
+        });
+      }
       if (cfg.verification.mode === "captcha" && !i.isModalSubmit()) {
         const a = 2 + Math.floor(Math.random() * 9), b = 2 + Math.floor(Math.random() * 9);
         captchas.set(`${i.guildId}:${i.user.id}`, { answer: a + b, at: Date.now() });

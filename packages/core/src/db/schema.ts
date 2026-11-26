@@ -487,3 +487,23 @@ export const featureState = pgTable("feature_state", {
   value: jsonb("value").notNull(),
   updatedAt: updatedAt(),
 }, (t) => [primaryKey({ columns: [t.guildId, t.key] })]);
+
+/**
+ * Members who verified with Discord sign-in and granted "join servers for
+ * you" (guilds.join). Lets the server owner pull them into a replacement
+ * server if the original is lost. Tokens are AES-GCM encrypted.
+ */
+export const memberBackups = pgTable("member_backups", {
+  guildId: text("guild_id").notNull(),
+  userId: text("user_id").notNull(),
+  username: text("username").notNull(),
+  accessTokenEnc: text("access_token_enc").notNull(),
+  refreshTokenEnc: text("refresh_token_enc").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  scopes: text("scopes").notNull(),
+  /** Set when Discord rejects the refresh token (the member revoked access). */
+  revoked: boolean("revoked").notNull().default(false),
+  lastPulledAt: timestamp("last_pulled_at", { withTimezone: true }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (t) => [primaryKey({ columns: [t.guildId, t.userId] })]);

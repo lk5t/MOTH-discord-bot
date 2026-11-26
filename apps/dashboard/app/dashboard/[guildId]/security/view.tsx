@@ -105,7 +105,7 @@ function Protection({ c, cfg }: { c: GuildConfig; cfg: ReturnType<typeof useGuil
         </Card>
         <Card title="Verification" subtitle="Members must verify to access the server.">
           <ToggleRow title="Enable verification" checked={c.verification.enabled} onChange={(v) => cfg.update("verification", { enabled: v })} />
-          <div className="grid g2 mt"><Field label="Mode"><Select value={c.verification.mode} onChange={(v) => cfg.update("verification", { mode: v as "button" })} options={[{ value: "button", label: "Button" }, { value: "captcha", label: "Captcha (maths question)" }]} /></Field><Field label="Channel"><ChannelSelect value={c.verification.channelId} onChange={(v) => cfg.update("verification", { channelId: v })} /></Field></div>
+          <div className="grid g2 mt"><Field label="Mode"><Select value={c.verification.mode} onChange={(v) => cfg.update("verification", { mode: v as "button" })} options={[{ value: "button", label: "Button" }, { value: "captcha", label: "Captcha (maths question)" }, { value: "oauth", label: "Verify with Discord (backs members up)" }]} /></Field><Field label="Channel"><ChannelSelect value={c.verification.channelId} onChange={(v) => cfg.update("verification", { channelId: v })} /></Field></div>
           <VerifyRoles c={c} cfg={cfg} />
         </Card>
       </div>

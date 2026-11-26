@@ -8,12 +8,12 @@ import { ChannelMulti, ChannelSelect, RoleMulti, RoleSelect, useNames } from "@/
 import { I } from "@/components/icons";
 
 export function SettingsView() {
-  const [tab, setTab] = useState<"general" | "community" | "backups" | "access" | "history">("general");
+  const [tab, setTab] = useState<"general" | "community" | "backups" | "members" | "access" | "history">("general");
   return (
     <>
       <PageHead title="Server Settings" description="Complete configuration management, backups, dashboard access and change history." />
-      <Tabs value={tab} onChange={setTab} tabs={[{ value: "general", label: "General & logging" }, { value: "community", label: "Community features" }, { value: "backups", label: "Backups" }, { value: "access", label: "Dashboard access" }, { value: "history", label: "Change history" }]} />
-      {tab === "general" && <General />}{tab === "community" && <Community />}{tab === "backups" && <Backups />}{tab === "access" && <Access />}{tab === "history" && <History />}
+      <Tabs value={tab} onChange={setTab} tabs={[{ value: "general", label: "General & logging" }, { value: "community", label: "Community features" }, { value: "backups", label: "Backups" }, { value: "members", label: "Member backup" }, { value: "access", label: "Dashboard access" }, { value: "history", label: "Change history" }]} />
+      {tab === "general" && <General />}{tab === "community" && <Community />}{tab === "backups" && <Backups />}{tab === "members" && <MemberBackup />}{tab === "access" && <Access />}{tab === "history" && <History />}
     </>
   );
 }
@@ -151,4 +151,46 @@ function History() {
       {open === c.id && (c.before != null || c.after != null) && <div className="grid g2" style={{ marginBottom: 12 }}><pre className="card flat small" style={{ whiteSpace: "pre-wrap", margin: 0, maxHeight: 300, overflow: "auto" }}>{JSON.stringify(c.before, null, 2) ?? "—"}</pre><pre className="card flat small" style={{ whiteSpace: "pre-wrap", margin: 0, maxHeight: 300, overflow: "auto" }}>{JSON.stringify(c.after, null, 2) ?? "—"}</pre></div>}
     </div>)}
   </Card>;
+}
+
+type PullStatus = { running: boolean; sourceGuildId: string; total: number; added: number; already: number; failed: number; revoked: number; startedAt: string; finishedAt?: string; error?: string };
+type MB = { here: { total: number; active: number }; canPull: boolean; sources: { id: string; name: string; active: boolean; total: number; restorable: number; last: string | null }[]; status: PullStatus | null };
+function MemberBackup() {
+  const { guildId, level } = useGuild();
+  const toast = useToast(); const confirm = useConfirm();
+  const cfg = useGuildConfig();
+  const q = useApi<MB>(`/api/guilds/${guildId}/member-backup`, { refreshMs: 5_000 });
+  const [busy, setBusy] = useState(false);
+  const oauth = cfg.config?.verification.enabled && cfg.config.verification.mode === "oauth";
+  async function pull(src: MB["sources"][number]) {
+    if (!(await confirm({ title: `Restore members from ${src.name}?`, confirm: "Start restore", body: <>MOTH will add up to <b>{src.restorable}</b> backed-up members to <b>this</b> server{src.id === guildId ? " (members who are already here are skipped)" : ""}. They get the verified role here automatically. This can take a while — about 4 members per second.</> }))) return;
+    setBusy(true);
+    try { await api(`/api/guilds/${guildId}/member-backup/pull`, { body: { sourceGuildId: src.id } }); toast("Restore started"); void q.reload(); }
+    catch (e) { toast((e as Error).message, true); } finally { setBusy(false); }
+  }
+  const st = q.data?.status;
+  return <div className="grid g2">
+    <Card accent title="Member backup" subtitle="When members verify with Discord sign-in they allow MOTH to “join servers for you”. If this server is ever nuked, deleted or you move, you can pull them into the new server in one click.">
+      {!q.data ? <Skeleton h={120} /> : <div className="stack">
+        <div className="row between"><span className="muted">Members backed up here</span><b style={{ fontSize: 22 }}>{q.data.here.active.toLocaleString()}</b></div>
+        {q.data.here.total > q.data.here.active && <div className="small faint">{q.data.here.total - q.data.here.active} member(s) removed MOTH's access and can't be restored.</div>}
+        {!oauth ? <div className="small" style={{ color: "#f59e0b" }}>Backups only happen when verification mode is <b>Verify with Discord</b>. Turn it on under Security → Verification (or Quick Setup → Verification gate), then re-post the verification panel.</div>
+          : <div className="small" style={{ color: "var(--ok)" }}>✓ Verify with Discord is on — every new verification is backed up.</div>}
+        <div className="small faint">Members can withdraw at any time in Discord → User Settings → Authorized Apps. Keep your MOTH server online and your <code>.env</code> backed up — the backup lives in MOTH&apos;s database.</div>
+        {level === "owner" && q.data.here.total > 0 && <div><Button size="sm" variant="ghost" icon={<I.trash />} onClick={async () => { if (await confirm({ title: "Delete all member backups for this server?", danger: true, confirm: "Delete", body: "You won't be able to restore these members later." })) { await api(`/api/guilds/${guildId}/member-backup`, { method: "DELETE" }); void q.reload(); } }}>Delete backups</Button></div>}
+      </div>}
+    </Card>
+    <Card title="Restore members into this server" subtitle="Pick the server whose members you want to bring here. Servers you own are listed — even ones that were deleted.">
+      {!q.data ? <Skeleton h={120} /> : <>
+        {st && <div className="card flat mb"><div className="row between"><b>{st.running ? "Restoring…" : st.error ? "Restore stopped" : "Last restore"}</b><span className="small faint">{timeAgo(st.finishedAt ?? st.startedAt)}</span></div>
+          <div className="row wrap mt"><Chip tone="ok">{st.added} added</Chip><Chip>{st.already} already here</Chip>{!!st.revoked && <Chip tone="warn">{st.revoked} revoked</Chip>}{!!st.failed && <Chip tone="crim">{st.failed} failed</Chip>}<span className="small faint">of {st.total}</span></div>
+          {st.error && <div className="small mt" style={{ color: "#ff6b85" }}>{st.error}</div>}</div>}
+        {!q.data.canPull ? <Empty title="Only the server owner can restore members" /> : !q.data.sources.filter((x) => x.total > 0).length ? <Empty title="No backed-up members yet">Members appear here after they verify with Discord sign-in.</Empty>
+          : q.data.sources.filter((x) => x.total > 0).map((src) => <div key={src.id} className="list-item">
+            <div className="grow"><div><b>{src.name}</b> {src.id === guildId ? <Chip tone="info">this server</Chip> : !src.active ? <Chip tone="crim">gone</Chip> : null}</div><div className="small faint">{src.restorable.toLocaleString()} restorable members</div></div>
+            <Button size="sm" variant="primary" loading={busy} disabled={!!st?.running} onClick={() => pull(src)}>Restore here</Button>
+          </div>)}
+      </>}
+    </Card>
+  </div>;
 }

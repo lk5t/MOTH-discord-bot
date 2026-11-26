@@ -22,13 +22,21 @@ export interface GuildSnapshot {
   roles: SnapshotRole[]; channels: SnapshotChannel[];
   /** Other bot accounts in the server (MOTH itself excluded). */
   bots?: { id: string; name: string; kickable: boolean }[];
+  /** MOTH verification gate currently configured (unverified members only see the verify channel). */
+  verification?: { roleId: string; channelId: string | null } | null;
   capturedAt: string;
 }
 
 /** Compact, token-efficient text description of a server for AI prompts. */
 export function describeSnapshot(s: GuildSnapshot, maxChannels = 250): string {
   const roles = [...s.roles].filter((r) => !r.everyone).sort((a, b) => b.position - a.position);
-  const lines: string[] = [`Server "${s.name}" — ${s.memberCount} members, verification level ${s.verificationLevel}.`, "Roles (highest first):"];
+  const lines: string[] = [`Server "${s.name}" — ${s.memberCount} members, verification level ${s.verificationLevel}.`];
+  if (s.verification) {
+    const role = s.roles.find((r) => r.id === s.verification!.roleId)?.name ?? "Verified";
+    const ch = s.channels.find((c) => c.id === s.verification!.channelId)?.name ?? "verify";
+    lines.push(`Verification gate ON: unverified members can only see #${ch}; every other channel is visible to @${role} only (MOTH enforces this).`);
+  }
+  lines.push("Roles (highest first):");
   for (const r of roles.slice(0, 80)) {
     const perms = BigInt(r.permissions);
     const flags = [(perms & 8n) ? "ADMIN" : "", r.managed ? "managed" : "", r.hoist ? "hoisted" : ""].filter(Boolean).join(",");

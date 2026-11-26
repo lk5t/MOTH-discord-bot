@@ -73,7 +73,7 @@ export type BlueprintRole = z.infer<typeof blueprintRoleSchema>;
 export const blueprintFeaturesSchema = z.object({
   welcome: z.object({ channel: ref, title: z.string().max(256).optional(), message: z.string().max(2000), dm: z.string().max(2000).optional() }).optional(),
   goodbye: z.object({ channel: ref, message: z.string().max(2000) }).optional(),
-  verification: z.object({ mode: z.enum(["button", "captcha"]).default("button"), channel: ref, verifiedRole: ref, message: z.string().max(2000).optional() }).optional(),
+  verification: z.object({ mode: z.enum(["button", "captcha", "oauth"]).default("oauth"), channel: ref, verifiedRole: ref, message: z.string().max(2000).optional() }).optional(),
   autoroles: z.array(ref).optional(),
   moderation: z.object({ preset: z.enum(["relaxed", "balanced", "strict"]).default("balanced"), logChannel: ref.optional(), modRoles: z.array(ref).optional(), appealsChannel: ref.optional() }).optional(),
   security: z.object({ sensitivity: z.enum(["low", "medium", "high", "paranoid"]).default("medium"), logChannel: ref.optional(), alertRoles: z.array(ref).optional() }).optional(),

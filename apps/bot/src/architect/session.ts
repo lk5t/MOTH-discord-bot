@@ -37,7 +37,7 @@ function planFor(snapshot: GuildSnapshot, guild: Guild, mode: ArchitectMode, blu
     // Full Redesign removes everything not in the new design by default; every removal is destructive and needs approval.
     mode, prune: o.prune ?? (mode === "create" ? looksFresh(snapshot) : mode === "redesign"), resetPermissions: o.resetPermissions ?? false,
     removeBots: o.removeBots ?? mode === "redesign",
-    reorder: o.reorder ?? (mode === "create" || mode === "redesign"), protectedChannelIds: protectedChannelIds(guild),
+    reorder: o.reorder ?? true, protectedChannelIds: protectedChannelIds(guild),
   });
 }
 

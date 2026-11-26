@@ -77,13 +77,20 @@ async function runPack(guild: Guild, pack: SetupPack, actorId: string | null, dr
   out.items.push({ pack: pack.key, kind: "config", name: pack.name, action: "configure" });
   if (pack.note) out.notes.push(pack.note);
   if (dry) {
-    for (const e of pack.extras ?? []) out.items.push({ pack: pack.key, kind: "panel", name: e === "ticket-panel" ? "Ticket panel" : "Verification panel", action: "publish" });
+    for (const e of pack.extras ?? []) {
+      if (e === "gate-channels") out.items.push({ pack: pack.key, kind: "config", name: "Hide every channel except #verify from unverified members", action: "configure" });
+      else out.items.push({ pack: pack.key, kind: "panel", name: e === "ticket-panel" ? "Ticket panel" : "Verification panel", action: "publish" });
+    }
     return;
   }
   await updateGuildConfig(guild.id, pack.config(ids, cfg), { actorId, source: "system" });
 
   for (const extra of pack.extras ?? []) {
     try {
+      if (extra === "gate-channels") {
+        const n = await gateUnverified(guild, ids.verified, ids.verify);
+        out.items.push({ pack: pack.key, kind: "config", name: `Hid ${n} channel(s) from unverified members`, action: "configure" });
+      }
       if (extra === "publish-verification") { await publishVerification(guild); out.items.push({ pack: pack.key, kind: "panel", name: "Verification panel", action: "publish" }); }
       if (extra === "ticket-panel") {
         const db = getDb();
@@ -111,10 +118,39 @@ async function runPack(guild: Guild, pack: SetupPack, actorId: string | null, dr
   if (pack.key === "stats") await updateStatsChannels(guild).catch(() => undefined);
 }
 
+/**
+ * Unverified members see only the verify channel: every channel/category that
+ * @everyone can currently see is hidden from @everyone and shown to the
+ * verified role. Private (staff) channels are left alone. Returns the count.
+ */
+export async function gateUnverified(guild: Guild, verifiedRoleId: string, verifyChannelId: string): Promise<number> {
+  let n = 0;
+  const everyone = guild.roles.everyone.id;
+  const reason = "MOTH verification gate";
+  const sorted = [...guild.channels.cache.values()].filter((c) => !c.isThread()).sort((a, b) => (a.type === ChannelType.GuildCategory ? 0 : 1) - (b.type === ChannelType.GuildCategory ? 0 : 1));
+  for (const ch of sorted) {
+    if (!("permissionOverwrites" in ch)) continue;
+    const ow = ch.permissionOverwrites.cache.get(everyone);
+    if (ch.id === verifyChannelId) {
+      await ch.permissionOverwrites.edit(everyone, { ViewChannel: true, ReadMessageHistory: true }, { reason }).catch(() => undefined);
+      await ch.permissionOverwrites.edit(verifiedRoleId, { ViewChannel: false }, { reason }).catch(() => undefined);
+      continue;
+    }
+    if (ow?.deny.has(PermissionFlagsBits.ViewChannel)) continue; // already private
+    try {
+      await ch.permissionOverwrites.edit(everyone, { ViewChannel: false }, { reason });
+      await ch.permissionOverwrites.edit(verifiedRoleId, { ViewChannel: true }, { reason });
+      n++;
+    } catch (err) { log.warn({ err, channel: ch.id }, "verification gate failed for channel"); }
+  }
+  return n;
+}
+
 /** Preview (dry) or apply setup packs. */
 export async function runSetup(guild: Guild, packKeys: string[], opts: { actorId?: string | null; dry?: boolean } = {}): Promise<SetupResult> {
   const out: SetupResult = { items: [], notes: [], errors: [] };
-  const packs = [...new Set(packKeys)].map((k) => setupPack(k)).filter((p): p is SetupPack => !!p);
+  // Verification runs last so channels created by the other packs are locked behind it too.
+  const packs = [...new Set(packKeys)].map((k) => setupPack(k)).filter((p): p is SetupPack => !!p).sort((a, b) => Number(a.key === "verification") - Number(b.key === "verification"));
   if (!packs.length) throw new Error("Choose at least one setup pack.");
   const me = guild.members.me;
   if (!opts.dry && !me?.permissions.has([PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles])) throw new Error("MOTH needs the Manage Channels and Manage Roles permissions to run setup.");

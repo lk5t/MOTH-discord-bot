@@ -7,11 +7,11 @@ import {
   dashboardAccess, encryptSecret, getDb, getGuildConfigWithVersion, guildConfigSchema, guildConfigSections, guildState, maskSecret, memberLevels,
   economyAccounts, modCases, publishEvent, renderMessage, roleMenus, securityEvents, ticketPanels, tickets, ticketTranscripts, updateGuildConfig,
   userAchievements, logChange, blueprintSchema, messageTemplateSchema, embedSchema, type GuildConfigSection,
-  buildRecipe, suggestions, memberInvites, starboardPosts, tempVoiceChannels,
+  buildRecipe, suggestions, memberInvites, starboardPosts, tempVoiceChannels, memberBackups, guilds,
 } from "@moth/core";
 import { ApiError, body, json, requireLevel, type GuildCtx } from "./api";
 import { bot } from "./bot";
-import { invalidateAccess } from "./access";
+import { invalidateAccess, isPlatformOwner } from "./access";
 
 type Handler = (ctx: GuildCtx) => Promise<Response>;
 type Route = { method: string; path: string; handler: Handler };
@@ -252,6 +252,45 @@ r("GET", "tools/summary", async (ctx) => {
     bot<Record<string, number>>(`/guilds/${g}/stats-preview`).catch(() => null),
   ]);
   return json({ suggestions: sugs, suggestionStats: sugStats, inviters, inviteStats: invStats, starboard: stars, activeVoiceRooms: voice.n, stats });
+});
+
+// ───────── Member backup (Verify with Discord → pull members back) ─────────
+const backupCounts = (guildIds: string[]) => guildIds.length
+  ? db().select({ guildId: memberBackups.guildId, total: sql<number>`count(*)::int`, active: sql<number>`count(*) filter (where not ${memberBackups.revoked})::int`, last: sql<string | null>`max(${memberBackups.createdAt})` })
+    .from(memberBackups).where(sql`${memberBackups.guildId} in (${sql.join(guildIds.map((g) => sql`${g}`), sql`, `)})`).groupBy(memberBackups.guildId)
+  : Promise.resolve([]);
+r("GET", "member-backup", async (ctx) => {
+  requireLevel(ctx, "admin");
+  // Sources: servers this user owns (including deleted/lost ones) — that's what makes a restore possible after a nuke.
+  const owned = isPlatformOwner(ctx.userId)
+    ? await db().select({ id: guilds.id, name: guilds.name, active: guilds.active }).from(guilds)
+    : await db().select({ id: guilds.id, name: guilds.name, active: guilds.active }).from(guilds).where(eq(guilds.ownerId, ctx.userId));
+  const ids = [...new Set([ctx.guildId, ...owned.map((g) => g.id)])];
+  const counts = await backupCounts(ids);
+  const live = await bot<{ status: unknown }>(`/guilds/${ctx.guildId}/member-pull`).catch(() => ({ status: null }));
+  const here = counts.find((c) => c.guildId === ctx.guildId);
+  return json({
+    here: { total: here?.total ?? 0, active: here?.active ?? 0 },
+    canPull: ctx.level === "owner" || owned.length > 0,
+    sources: owned.map((g) => { const c = counts.find((x) => x.guildId === g.id); return { id: g.id, name: g.name, active: g.active, total: c?.total ?? 0, restorable: c?.active ?? 0, last: c?.last ?? null }; }).filter((g) => g.total > 0),
+    status: live.status,
+  });
+});
+r("POST", "member-backup/pull", async (ctx) => {
+  requireLevel(ctx, "admin");
+  const b = await body(ctx.req, z.object({ sourceGuildId: z.string().regex(/^\d{15,22}$/) }));
+  const [src] = await db().select().from(guilds).where(eq(guilds.id, b.sourceGuildId));
+  const allowed = isPlatformOwner(ctx.userId) || src?.ownerId === ctx.userId || (b.sourceGuildId === ctx.guildId && ctx.level === "owner");
+  if (!allowed) throw new ApiError(403, "Only the owner of the backed-up server can restore its members");
+  const out = await bot(`/guilds/${ctx.guildId}/member-pull`, { body: { sourceGuildId: b.sourceGuildId } });
+  await audit(ctx, "member-backup.pull", b.sourceGuildId);
+  return json(out);
+});
+r("DELETE", "member-backup", async (ctx) => {
+  requireLevel(ctx, "owner");
+  await db().delete(memberBackups).where(eq(memberBackups.guildId, ctx.guildId));
+  await audit(ctx, "member-backup.delete");
+  return json({ ok: true });
 });
 
 // ───────── Custom commands ─────────

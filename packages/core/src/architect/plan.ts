@@ -1,3 +1,4 @@
+import { categoryRank, organiseBlueprint } from "./organise.js";
 import type { Blueprint, BlueprintCategory, BlueprintChannel, BlueprintRole } from "./blueprint.js";
 import { blueprintSchema } from "./blueprint.js";
 import type { GuildSnapshot, SnapshotChannel, SnapshotChannelType, SnapshotOverwrite, SnapshotRole } from "./snapshot.js";
@@ -29,6 +30,8 @@ export interface PlanOptions {
   /** Reorder existing channels/roles to match the blueprint. */
   reorder?: boolean;
   protectedChannelIds?: string[];
+  /** Hide everything except the verify channel from members without the verified role (default on when verification is used). */
+  gateUnverified?: boolean;
 }
 
 export interface PlannedOverwrite { target: string; allow: PermissionName[]; deny: PermissionName[] }
@@ -94,10 +97,105 @@ class Planner {
   private roleKeys = new Map<string, string>(); // normalised key/name -> ref
   private channelKeys = new Map<string, string>();
   private staffRefs: string[] = [];
+  private deletedChannels = new Set<string>();
+  private catEntries: { ref: string; name: string; channels: { name: string; type?: string }[]; existingId?: string }[] = [];
 
   constructor(private snap: GuildSnapshot, private bp: Blueprint, private opts: PlanOptions) {}
 
   private push(op: PlanOpInput) { this.ops.push({ ...op, id: `op${++this.n}` } as PlanOp); }
+
+  /**
+   * Orders every category in the server (new, changed and untouched ones) by
+   * convention — Start Here first, staff and archive last — and the channels
+   * of the categories in the blueprint. Skipped when nothing would move.
+   */
+  private planOrder(channelOrder: { ref: string; parent: string | null }[]) {
+    const snap = this.snap;
+    const full = this.opts.mode !== "quick";
+    const fromBp = new Map(this.catEntries.filter((c) => c.existingId).map((c) => [c.existingId!, c]));
+    const existingCats = snap.channels.filter((c) => c.type === "category" && !this.deletedChannels.has(c.id)).sort((a, b) => a.position - b.position);
+    const childrenOf = (id: string) => snap.channels.filter((c) => c.parentId === id && !this.deletedChannels.has(c.id));
+    type Entry = { ref: string; name: string; channels: { name: string; type?: string }[]; existingId?: string };
+    const leftovers: Entry[] = existingCats.filter((c) => !fromBp.has(c.id)).map((c) => ({ ref: `id:${c.id}`, name: c.name, channels: childrenOf(c.id), existingId: c.id }));
+    const newCats = this.catEntries.filter((c) => !c.existingId);
+    // Starting order: the blueprint's for new layouts, the server's current order for edits.
+    const start: Entry[] = this.opts.mode === "create" || this.opts.mode === "redesign"
+      ? [...this.catEntries, ...leftovers]
+      : [...existingCats.map((c) => fromBp.get(c.id) ?? leftovers.find((l) => l.existingId === c.id)!), ...newCats];
+    const sorted = start.map((e, i) => ({ e, i, r: categoryRank(e.name, e.channels) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.e);
+
+    const order: { ref: string; parent: string | null }[] = channelOrder.filter((o) => o.parent === null);
+    for (const cat of sorted) {
+      order.push({ ref: cat.ref, parent: null });
+      // Quick edits only arrange channels inside categories they create.
+      if (full || !cat.existingId) order.push(...channelOrder.filter((o) => o.parent === cat.ref));
+    }
+    const changed = newCats.length > 0 || sorted.some((c, i) => c.existingId !== existingCats[i]?.id) || (full && this.catEntries.length > 0);
+    if (order.length && changed) this.push({ kind: "channels.reorder", order, destructive: false, description: sorted.length ? `Arrange categories (${sorted.slice(0, 3).map((c) => c.name).join(" → ")}${sorted.length > 3 ? " → …" : ""}) and channels` : "Arrange channels" });
+  }
+
+  /**
+   * Verification gate: when the server uses verification, members without the
+   * verified role see ONLY the verify channel. Every other channel/category is
+   * hidden from @everyone and shown to the verified role; private (staff)
+   * areas stay private. Verified members no longer see the verify channel.
+   */
+  private planVerificationGate() {
+    const f = this.bp.features.verification;
+    const sv = this.snap.verification;
+    const roleRef = f ? this.roleRef(f.verifiedRole) : sv && this.snap.roles.some((r) => r.id === sv.roleId) ? `id:${sv.roleId}` : null;
+    if (!roleRef || roleRef === "@everyone") return;
+    const chanRef = f ? this.channelRef(f.channel) : sv?.channelId ? `id:${sv.channelId}` : null;
+    const verifyId = chanRef?.startsWith("id:") ? chanRef.slice(3) : chanRef ? this.refs[chanRef] : undefined;
+    const isVerify = (ref?: string, id?: string) => (!!chanRef && ref === chanRef) || (!!verifyId && id === verifyId);
+
+    const clone = (l: PlannedOverwrite[]) => l.map((o) => ({ target: o.target, allow: [...o.allow], deny: [...o.deny] }));
+    const entry = (l: PlannedOverwrite[], t: string) => { let e = l.find((o) => o.target === t); if (!e) { e = { target: t, allow: [], deny: [] }; l.push(e); } return e; };
+    const set = (e: PlannedOverwrite, p: PermissionName, allow: boolean) => { e.allow = e.allow.filter((x) => x !== p); e.deny = e.deny.filter((x) => x !== p); (allow ? e.allow : e.deny).push(p); };
+    const gate = (base: PlannedOverwrite[], verify: boolean): PlannedOverwrite[] | null => {
+      const ev = base.find((o) => o.target === "@everyone");
+      if (verify) {
+        const r = base.find((o) => o.target === roleRef);
+        if (!ev?.deny.includes("ViewChannel") && r?.deny.includes("ViewChannel")) return null;
+        const l = clone(base); set(entry(l, "@everyone"), "ViewChannel", true); set(entry(l, roleRef), "ViewChannel", false); return l;
+      }
+      if (ev?.deny.includes("ViewChannel")) return null; // already private / gated
+      const l = clone(base); set(entry(l, "@everyone"), "ViewChannel", false); set(entry(l, roleRef), "ViewChannel", true); return l;
+    };
+    const current = (c: SnapshotChannel): PlannedOverwrite[] => c.overwrites.map((o) => ({ target: o.type === "member" ? `member:${o.id}` : o.id === this.snap.id ? "@everyone" : `id:${o.id}`, allow: fromBits(o.allow), deny: fromBits(o.deny) }));
+    const byId = new Map(this.snap.channels.map((c) => [c.id, c]));
+    const handled = new Set<string>();
+    const catOverwrites = new Map<string, PlannedOverwrite[]>();
+    // Existing categories that the blueprint doesn't touch are gated below; record what they'll become.
+    for (const c of this.snap.channels) if (c.type === "category") { const g = gate(current(c), false); catOverwrites.set(`id:${c.id}`, g ?? current(c)); }
+
+    for (const op of this.ops) {
+      if (op.kind === "category.create" || op.kind === "category.update" || op.kind === "channel.create" || op.kind === "channel.update") {
+        const id = "channelId" in op ? op.channelId : undefined;
+        if (id) handled.add(id);
+        const verify = isVerify(op.ref, id);
+        let base: PlannedOverwrite[];
+        if (op.kind === "channel.create" && op.overwrites === null) {
+          // Would inherit its category — use the category's (gated) permissions explicitly.
+          const parentId = op.parent?.startsWith("id:") ? op.parent.slice(3) : op.parent ? this.refs[op.parent] : undefined;
+          base = op.parent ? catOverwrites.get(op.parent) ?? (parentId ? catOverwrites.get(`id:${parentId}`) : undefined) ?? [] : [];
+        } else base = op.overwrites ?? (id && byId.get(id) ? current(byId.get(id)!) : []);
+        const gated = gate(base, verify);
+        if (gated) { op.overwrites = gated; op.description += verify ? " · visible only to unverified members" : " · hidden until verified"; }
+        else if (op.kind === "channel.create" && op.overwrites === null && base.length) op.overwrites = base;
+        if (op.kind === "category.create" || op.kind === "category.update") catOverwrites.set(op.ref, op.overwrites ?? base);
+      }
+    }
+    for (const c of this.snap.channels) {
+      if (handled.has(c.id) || this.deletedChannels.has(c.id)) continue;
+      const verify = isVerify(undefined, c.id);
+      const gated = gate(current(c), verify);
+      if (!gated) continue;
+      const label = c.type === "category" ? `category ${c.name}` : `#${c.name}`;
+      if (c.type === "category") this.push({ kind: "category.update", ref: `id:${c.id}`, channelId: c.id, data: {}, overwrites: gated, destructive: false, description: verify ? `Show ${label} to unverified members` : `Hide ${label} until members verify` });
+      else this.push({ kind: "channel.update", ref: `id:${c.id}`, channelId: c.id, data: {}, overwrites: gated, destructive: false, description: verify ? `Show ${label} only to unverified members` : `Hide ${label} until members verify` });
+    }
+  }
 
   // ── reference resolution ──
   roleRef(name: string): string | null {
@@ -283,8 +381,8 @@ class Planner {
     for (const c of bp.channels) planChannel(c, null, topParent, null);
     for (const cat of bp.categories) {
       const ref = `chan:${keyOf(cat)}`;
-      order.push({ ref, parent: null });
       const existing = this.matchChannel(cat, "category");
+      this.catEntries.push({ ref, name: cat.name, channels: cat.channels, existingId: existing?.id });
       const desired = this.desiredOverwrites(cat);
       if (existing) {
         this.usedChannels.add(existing.id);
@@ -298,9 +396,6 @@ class Planner {
       }
       for (const ch of cat.channels) planChannel(ch, ref, existing ? existing.id : undefined, desired);
     }
-    if (order.length && (opts.mode === "create" || opts.mode === "redesign" || opts.reorder)) {
-      this.push({ kind: "channels.reorder", order, destructive: false, description: "Arrange categories and channels" });
-    }
 
     // ── features ──
     this.planFeatures();
@@ -309,6 +404,7 @@ class Planner {
     const deleteChannel = (c: SnapshotChannel, why: string) => {
       if (protectedIds.has(c.id)) { this.warnings.push(`#${c.name} is a protected system channel and was kept.`); return; }
       this.usedChannels.add(c.id);
+      this.deletedChannels.add(c.id);
       this.push({ kind: "channel.delete", channelId: c.id, name: c.name, channelType: c.type, destructive: true, description: `Delete ${c.type === "category" ? "category" : "#"}${c.type === "category" ? " " + c.name : c.name} (${why})` });
     };
     const deletableRole = (r: SnapshotRole) => !r.everyone && !r.managed && r.id !== snap.botRoleId && (snap.botHighestPosition === undefined || r.position < snap.botHighestPosition);
@@ -334,6 +430,9 @@ class Planner {
         this.push({ kind: "role.delete", roleId: r.id, name: r.name, destructive: true, description: `Delete role @${r.name} (not in blueprint)` });
       }
     }
+
+    if (opts.gateUnverified !== false) this.planVerificationGate();
+    if (opts.reorder ?? (opts.mode === "create" || opts.mode === "redesign")) this.planOrder(order);
 
     // Other bots: explicit removals, or all of them when removeBots is on.
     const removedBots = new Set<string>();
@@ -501,6 +600,6 @@ export function looksFresh(s: GuildSnapshot): boolean {
 }
 
 export function buildPlan(snapshot: GuildSnapshot, blueprintInput: unknown, opts: PlanOptions): ArchitectPlan {
-  const bp = blueprintSchema.parse(blueprintInput);
-  return new Planner(snapshot, bp, { reorder: false, ...opts, prune: opts.prune ?? (opts.mode === "create" && looksFresh(snapshot)) }).build();
+  const bp = organiseBlueprint(blueprintSchema.parse(blueprintInput));
+  return new Planner(snapshot, bp, { ...opts, prune: opts.prune ?? (opts.mode === "create" && looksFresh(snapshot)) }).build();
 }

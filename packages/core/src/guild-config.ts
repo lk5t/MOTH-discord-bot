@@ -72,7 +72,8 @@ export const guildConfigSchema = z.object({
 
   verification: z.object({
     enabled: z.boolean().default(false),
-    mode: z.enum(["button", "captcha"]).default("button"),
+    /** oauth = "Verify with Discord" sign-in that also backs the member up (join servers for you). */
+    mode: z.enum(["button", "captcha", "oauth"]).default("button"),
     channelId: optId,
     verifiedRoleId: optId,
     unverifiedRoleId: optId,

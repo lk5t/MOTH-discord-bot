@@ -17,7 +17,7 @@ Blueprint JSON shape (all fields optional unless noted):
   "features": {
     "welcome": { "channel": chanRef, "title": string, "message": string, "dm": string },
     "goodbye": { "channel": chanRef, "message": string },
-    "verification": { "mode": "button"|"captcha", "channel": chanRef, "verifiedRole": roleRef, "message": string },
+    "verification": { "mode": "oauth"|"button"|"captcha" (prefer "oauth": Verify with Discord, which backs members up), "channel": chanRef, "verifiedRole": roleRef, "message": string },
     "autoroles": [roleRef],
     "moderation": { "preset": "relaxed"|"balanced"|"strict", "logChannel": chanRef, "modRoles": [roleRef], "appealsChannel": chanRef },
     "security": { "sensitivity": "low"|"medium"|"high"|"paranoid", "logChannel": chanRef, "alertRoles": [roleRef] },
@@ -42,6 +42,8 @@ Placeholders usable in messages: {user} {user.name} {server} {server.members} {c
 const COMMON_RULES = `
 Design rules:
 - Produce a coherent, professional structure: clear categories, purposeful channels, a staff hierarchy (admin > manager > moderator > support > member), private staff areas, logs.
+- Verification: if the server has (or you add) verification, unverified members must see ONLY the verify channel — every other channel is visible to the verified role only. MOTH applies this automatically; just include features.verification with the verify channel and verified role.
+- Order categories like a well-run server: a "Start Here" (welcome, rules, info, roles) category FIRST, then announcements, community topics, support, voice, and staff/logs LAST. Inside each category put welcome → rules → info → roles first and voice channels last.
 - Use a consistent naming style and theme (e.g. "📢┃announcements"). Keep names short. Text channel names are lowercase-with-dashes.
 - Use presets for role permissions; only list explicit "permissions" when needed. Never give @everyone dangerous permissions.
 - Preserve what already exists: reference existing roles/channels by exact name rather than recreating them. Use "renameFrom" to rename.

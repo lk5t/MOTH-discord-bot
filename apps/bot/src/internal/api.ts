@@ -1,4 +1,6 @@
 import { runSetup } from "../modules/setup.js";
+import { grant } from "../modules/welcome.js";
+import { backupCount, pullStatus, startPull } from "../modules/memberBackup.js";
 import { statsValues } from "../modules/channelTools.js";
 import http from "node:http";
 import { ChannelType, PermissionFlagsBits, type Guild } from "discord.js";
@@ -156,6 +158,14 @@ route("POST", "/v1/guilds/:guildId/messages", async ({ guild, body }) => {
 });
 
 // ── Commands & automations ──
+route("POST", "/v1/guilds/:guildId/oauth-verified", async ({ guild, body }) => {
+  const member = await guild.members.fetch(String(body.userId)).catch(() => null);
+  if (!member) return { ok: false, message: "You're not in this server — join it first, then verify." };
+  const err = await grant(member).catch((e) => (e as Error).message);
+  return err && err !== "You're already verified." ? { ok: false, message: err } : { ok: true, message: err ?? "You're verified — welcome!" };
+});
+route("GET", "/v1/guilds/:guildId/member-pull", async ({ guild }) => ({ status: await pullStatus(guild.id), backups: await backupCount(guild.id) }));
+route("POST", "/v1/guilds/:guildId/member-pull", async ({ guild, body }) => startPull(guild, String(body.sourceGuildId)));
 route("POST", "/v1/guilds/:guildId/setup", async ({ guild, body }) => runSetup(guild, Array.isArray(body.packs) ? body.packs.map(String) : [], { dry: !!body.dry, actorId: body.actorId ? String(body.actorId) : null }));
 route("GET", "/v1/guilds/:guildId/stats-preview", async ({ guild }) => statsValues(guild));
 route("POST", "/v1/guilds/:guildId/commands/sync", async ({ guild }) => ({ registered: await syncGuildCommands(guild) }));

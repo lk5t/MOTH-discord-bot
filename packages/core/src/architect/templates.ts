@@ -223,7 +223,7 @@ export function composeBlueprint(intent: DesignIntent): Blueprint {
       { channel: "rules", embed: { title: `📜 ${serverName} — Rules`, description: rulesText(intent), footer: "Breaking the rules may result in warnings, timeouts or bans." } },
     ],
   };
-  if (f.has("verification")) features.verification = { mode: intent.kind === "gaming" || intent.kind === "creator" ? "captcha" : "button", channel: "verify", verifiedRole: "member", message: `Welcome to **${serverName}**! Press **Verify** below to confirm you're human and unlock the server.` };
+  if (f.has("verification")) features.verification = { mode: "oauth", channel: "verify", verifiedRole: "member", message: `Welcome to **${serverName}**! Press **Verify** below to confirm you're human and unlock the server.` };
   if (f.has("faq")) features.messages!.push({ channel: "faq", embed: { title: "❓ Frequently Asked Questions", description: faqText(intent) } });
   if (f.has("tickets") || f.has("staff-applications")) {
     const categoriesT: NonNullable<NonNullable<BlueprintInput["features"]>["tickets"]>[number]["categories"] = [];

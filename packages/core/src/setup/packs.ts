@@ -21,7 +21,7 @@ export type PackChannel = {
 export type PackRole = { key: string; name: string; color?: string; staff?: boolean };
 export type PackIds = Record<string, string>;
 
-export type PackExtra = "publish-verification" | "ticket-panel";
+export type PackExtra = "publish-verification" | "ticket-panel" | "gate-channels";
 
 export interface SetupPack {
   key: string;
@@ -80,13 +80,12 @@ export const SETUP_PACKS: SetupPack[] = [
   {
     key: "verification", name: "Verification gate", icon: "✅",
     description: "A verify button new members press to get access. Blocks most bots and raid accounts.",
-    features: ["#verify channel with a button panel", "“Verified” role granted on click", "Raises verification automatically during raids"],
+    features: ["#verify channel with a button panel", "Unverified members see ONLY #verify — every other channel unlocks after verifying", "Optional “Verify with Discord” sign-in that backs up members", "Staff-only channels stay private"],
     channels: [{ key: "verify", name: "verify", type: "text", readOnly: true, topic: "Press the button to get access" }],
     roles: [{ key: "verified", name: "Verified", color: "#22C55E" }],
     existing: (c) => clean({ verify: c.verification.channelId, verified: c.verification.verifiedRoleId }),
-    config: (ids) => ({ verification: { enabled: true, mode: "button", channelId: ids.verify, verifiedRoleId: ids.verified } }),
-    extras: ["publish-verification"],
-    note: "For the gate to work, your other channels must be hidden from @everyone and visible to Verified. The Architect can do this for you: “make every channel except #verify visible only to Verified”.",
+    config: (ids) => ({ verification: { enabled: true, mode: "oauth", channelId: ids.verify, verifiedRoleId: ids.verified } }),
+    extras: ["gate-channels", "publish-verification"],
   },
   {
     key: "support", name: "Support tickets", icon: "🎫",
