@@ -44,9 +44,9 @@ const crons: Cron[] = [];
 export function startScheduler(): void {
   const safe = (name: string, fn: () => Promise<unknown>) => async () => { try { await fn(); } catch (err) { log.warn({ err, task: name }, "scheduled task failed"); } };
   crons.push(
-    new Cron("*/15 * * * * *", { protect: true }, safe("jobs", runDueJobs)),
-    new Cron("*/20 * * * * *", { protect: true }, safe("giveaways+polls", async () => { await endDueGiveaways(); await endDuePolls(); })),
-    new Cron("*/30 * * * * *", { protect: true }, safe("raid-recovery", async () => runtime.client && recoverExpiredRaids(runtime.client.guilds.cache))),
+    new Cron("*/30 * * * * *", { protect: true }, safe("jobs", runDueJobs)),
+    new Cron("*/30 * * * * *", { protect: true }, safe("giveaways+polls", async () => { await endDueGiveaways(); await endDuePolls(); })),
+    new Cron("15 * * * * *", { protect: true }, safe("raid-recovery", async () => runtime.client && recoverExpiredRaids(runtime.client.guilds.cache))),
     new Cron("*/10 * * * *", { protect: true }, safe("stats-channels", () => updateStatsChannels())),
     new Cron("*/5 * * * *", { protect: true }, safe("maintenance", async () => {
       await expireTimeoutCases();

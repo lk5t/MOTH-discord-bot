@@ -59,12 +59,21 @@ cmd="${1:-help}"; shift || true
 if [[ "$cmd" =~ ^(update|upgrade)$ && -z "${MOTH_SELF_COPY:-}" ]]; then
   self="$(mktemp)"; cp "$0" "$self"; chmod 755 "$self"; MOTH_SELF_COPY="$self" MOTH_DIR="$MOTH_DIR" exec bash "$self" "$cmd" "$@"
 fi
+# Is the prebuilt bot image for a main commit published yet?
+image_ready() {
+  local repo t; repo="$(env_get MOTH_IMAGE_PREFIX)"; repo="${repo:-ghcr.io/lk5t/moth}"; repo="${repo#ghcr.io/}-bot"
+  t=$(curl -fsSL "https://ghcr.io/token?scope=repository:${repo}:pull" 2>/dev/null | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+  [[ -n "$t" ]] && curl -fsSI -o /dev/null -H "Authorization: Bearer $t" \
+    -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json" \
+    "https://ghcr.io/v2/${repo}/manifests/sha-$1"
+}
+
 case "$cmd" in
   status|ps)
     dc ps --format "table {{.Service}}\t{{.State}}\t{{.Status}}"
     echo
     port="$(env_get DASHBOARD_PORT)"
-    if curl -fsS "http://127.0.0.1:${port:-3000}/api/health" >/dev/null 2>&1 || dc exec -T dashboard node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then echo "${G}●${Z} dashboard healthy"; else echo "${R}●${Z} dashboard unhealthy"; fi
+    if curl -fsS "http://127.0.0.1:${port:-29468}/api/health" >/dev/null 2>&1 || dc exec -T dashboard node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then echo "${G}●${Z} dashboard healthy"; else echo "${R}●${Z} dashboard unhealthy"; fi
     bot="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$(dc ps -q bot | head -1)" 2>/dev/null || echo stopped)"
     [[ "$bot" == healthy ]] && echo "${G}●${Z} bot connected to Discord" || echo "${Y}●${Z} bot: $bot"
     ;;
@@ -84,11 +93,19 @@ case "$cmd" in
       [[ -n "$latest" ]] || latest=$(curl -fsSL "https://api.github.com/repos/${REPO}/commits/main" 2>/dev/null | grep -m1 '"sha"' | cut -d'"' -f4 || true)
       [[ -n "$latest" ]] || { echo "couldn't reach GitHub; will retry later"; exit 0; }
       if [[ "$latest" == "$(env_get MOTH_INSTALLED_REF)" ]]; then echo "up to date (${latest:0:12})"; exit 0; fi
+      # Main-branch commits: wait (up to 6h) for CI to publish ready-made images so the server
+      # downloads them instead of building — building is what makes updates heavy on small servers.
+      if [[ "$latest" =~ ^[0-9a-f]{40}$ ]] && ! image_ready "$latest"; then
+        pend=/var/lib/moth-update-pending; first=$(awk -v s="$latest" '$1==s{print $2}' "$pend" 2>/dev/null || true)
+        [[ -n "$first" ]] || { mkdir -p /var/lib; echo "$latest $(date +%s)" >"$pend"; first=$(date +%s); }
+        if (( $(date +%s) - first < 21600 )); then echo "new version ${latest:0:12} found; waiting for its images to finish building"; exit 0; fi
+        echo "images for ${latest:0:12} never appeared; building locally"
+      fi
       echo "updating $(env_get MOTH_INSTALLED_REF | cut -c1-12) → ${latest:0:12}"
     fi
     echo "${B}Backing up the database first…${Z}"; bash "$0" backup
     tmp="$(mktemp)"; curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/install.sh" -o "$tmp"
-    MOTH_DIR="$MOTH_DIR" bash "$tmp" --unattended ${ver:+--version "$ver"}; rm -f -- "$tmp"
+    MOTH_UPDATE_AUTO="${auto:-0}" MOTH_DIR="$MOTH_DIR" bash "$tmp" --unattended ${ver:+--version "$ver"}; rm -f -- "$tmp"
     # Reclaim disk from superseded images and old build cache.
     docker image prune -f >/dev/null 2>&1 || true
     docker builder prune -f --filter until=72h >/dev/null 2>&1 || true

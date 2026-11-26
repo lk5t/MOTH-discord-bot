@@ -38,8 +38,18 @@ const client = new Client({
     GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMessageReactions, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.DirectMessages, GatewayIntentBits.GuildInvites,
   ],
   partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.GuildMember, Partials.User],
-  makeCache: Options.cacheWithLimits({ ...Options.DefaultMakeCacheSettings, MessageManager: 200 }),
-  sweepers: { ...Options.DefaultSweeperSettings, messages: { interval: 3600, lifetime: 1800 } },
+  // Small caches keep memory low; anything missing is fetched on demand.
+  makeCache: Options.cacheWithLimits({
+    ...Options.DefaultMakeCacheSettings,
+    MessageManager: 50, ThreadMemberManager: 0, PresenceManager: 0, GuildEmojiManager: 0, GuildStickerManager: 0,
+    GuildScheduledEventManager: 0, StageInstanceManager: 0, AutoModerationRuleManager: 0, ReactionUserManager: 0, GuildBanManager: 0,
+  }),
+  sweepers: {
+    ...Options.DefaultSweeperSettings,
+    messages: { interval: 600, lifetime: 900 },
+    threads: { interval: 3600, lifetime: 3600 },
+    users: { interval: 3600, filter: () => (u) => u.bot && u.id !== u.client.user.id },
+  },
   allowedMentions: { parse: ["users"] },
 });
 runtime.client = client;

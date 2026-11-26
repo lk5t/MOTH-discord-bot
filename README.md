@@ -178,7 +178,7 @@ docker compose up -d postgres      # or any Postgres 14+
 cp .env.example .env               # fill in values; DATABASE_URL=postgres://moth:<pw>@localhost:5432/moth
 npm run db:migrate
 npm run dev:bot                    # tsx watch
-npm run dev:dashboard              # next dev on :3000
+npm run dev:dashboard              # next dev on :3000 (production uses :29468)
 ```
 
 Schema changes: edit `packages/core/src/db/schema.ts`, then run `npm run db:generate`.

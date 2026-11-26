@@ -8,7 +8,7 @@
 #    --dir <path>          Install directory            (MOTH_DIR, default /opt/moth)
 #    --version <tag>       Release tag to install       (MOTH_INSTALL_VERSION, default latest)
 #    --domain <domain>     Enable automatic HTTPS       (MOTH_DOMAIN)
-#    --port <port>         Dashboard port without HTTPS (DASHBOARD_PORT, default 3000)
+#    --port <port>         Dashboard port without HTTPS (DASHBOARD_PORT, default 29468)
 #    --unattended          Never prompt; read DISCORD_TOKEN, DISCORD_CLIENT_ID,
 #                          DISCORD_CLIENT_SECRET, MOTH_OWNER_IDS from the environment
 #    --build               Build images locally instead of pulling them
@@ -28,7 +28,11 @@ REPO="lk5t/MOTH-discord-bot"
 MOTH_DIR="${MOTH_DIR:-/opt/moth}"
 INSTALL_VERSION="${MOTH_INSTALL_VERSION:-latest}"
 DOMAIN="${MOTH_DOMAIN:-}"
-PORT="${DASHBOARD_PORT:-3000}"
+# 29468: high, below Linux's ephemeral range (32768+) and not used by common software.
+DEFAULT_PORT=29468
+PORT_EXPLICIT=0; [[ -n "${DASHBOARD_PORT:-}" ]] && PORT_EXPLICIT=1
+PORT_CHANGED=0
+PORT="${DASHBOARD_PORT:-$DEFAULT_PORT}"
 UNATTENDED="${MOTH_UNATTENDED:-0}"
 FORCE_BUILD="${MOTH_BUILD:-0}"
 NO_START=0
@@ -43,7 +47,7 @@ while [[ $# -gt 0 ]]; do
     --dir) MOTH_DIR="$2"; shift 2 ;;
     --version) INSTALL_VERSION="$2"; shift 2 ;;
     --domain) DOMAIN="$2"; shift 2 ;;
-    --port) PORT="$2"; shift 2 ;;
+    --port) PORT="$2"; PORT_EXPLICIT=1; shift 2 ;;
     --unattended|-y) UNATTENDED=1; shift ;;
     --build) FORCE_BUILD=1; shift ;;
     --no-start) NO_START=1; shift ;;
@@ -195,7 +199,8 @@ else
   MAIN_SHA=$(curl -fsSL "https://api.github.com/repos/${REPO}/commits/main" 2>/dev/null | grep -m1 '"sha"' | cut -d'"' -f4 || true)
   warn "No published release found — installing the latest main branch${MAIN_SHA:+ (${MAIN_SHA:0:7})}."
   curl -fsSL "https://github.com/${REPO}/archive/${MAIN_SHA:-refs/heads/main}.tar.gz" -o "$WORK/moth.tar.gz" || die "Could not download MOTH from GitHub."
-  IMAGE_VERSION="latest"; FORCE_BUILD=1
+  # CI publishes images for every main commit (sha-<commit>); fall back to a local build if they aren't there.
+  if [[ -n "$MAIN_SHA" ]]; then IMAGE_VERSION="sha-${MAIN_SHA}"; else IMAGE_VERSION="latest"; FORCE_BUILD=1; fi
 fi
 INSTALLED_REF="${TAG:-${MAIN_SHA:-main}}"
 mkdir -p "$WORK/src"
@@ -355,12 +360,26 @@ if [[ -n "$DOMAIN" ]]; then
   set_env MOTH_DOMAIN "$DOMAIN"; set_env DASHBOARD_BIND "127.0.0.1"
   set_env DASHBOARD_URL "https://${DOMAIN}"
 else
+  CUR_PORT="$(get_env DASHBOARD_PORT)"
+  # Keep a port the admin picked; move installs still on the old default (3000) to the new one.
+  # Unattended auto-updates never move the port (that would break dashboard login without anyone noticing).
+  [[ $PORT_EXPLICIT == 0 && -n "$CUR_PORT" && ( "$CUR_PORT" != 3000 || "${MOTH_UPDATE_AUTO:-0}" == 1 ) ]] && PORT="$CUR_PORT"
+  port_busy() { ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1$"; }
+  if [[ "$PORT" != "$CUR_PORT" ]] || ! docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | grep -q "^moth-dashboard.*:${PORT}->"; then
+    tries=0; while port_busy "$PORT" && (( tries++ < 50 )); do PORT=$((PORT + 1)); done
+  fi
   set_env MOTH_DOMAIN ""; set_env DASHBOARD_BIND "0.0.0.0"; set_env DASHBOARD_PORT "$PORT"
   CUR_URL="$(get_env DASHBOARD_URL)"
-  [[ -z "$CUR_URL" || "$CUR_URL" == "http://localhost:3000" ]] && set_env DASHBOARD_URL "http://${PUBLIC_IP}:${PORT}"
+  if [[ -z "$CUR_URL" || "$CUR_URL" =~ ^http://localhost:(3000|29468)$ ]]; then set_env DASHBOARD_URL "http://${PUBLIC_IP}:${PORT}"
+  elif [[ "$CUR_URL" =~ ^http://([^/:]+):([0-9]+)/?$ && "${BASH_REMATCH[2]}" != "$PORT" ]]; then
+    set_env DASHBOARD_URL "http://${BASH_REMATCH[1]}:${PORT}"; PORT_CHANGED=1
+  fi
 fi
 DASH_URL="$(get_env DASHBOARD_URL)"
-CORES=$(nproc 2>/dev/null || echo 2); set_env OLLAMA_CPUS "$(( CORES > 1 ? CORES - 1 : 1 ))"
+CORES=$(nproc 2>/dev/null || echo 2)
+# Local AI gets half the CPU cores and at most ~60% of RAM so the server stays responsive.
+set_env OLLAMA_CPUS "$(( CORES >= 4 ? CORES / 2 : 1 ))"
+set_env OLLAMA_MEMORY "$(( RAM_MB * 60 / 100 > 2048 ? RAM_MB * 60 / 100 : 2048 ))m"
 PROFILES=""; [[ -n "$DOMAIN" ]] && PROFILES="https"
 [[ "$(get_env MOTH_LOCAL_AI)" == 1 ]] && PROFILES="${PROFILES:+$PROFILES,}local-ai"
 set_env COMPOSE_PROFILES "$PROFILES"
@@ -379,7 +398,6 @@ if [[ -n "$DOMAIN" ]]; then
   ok "Automatic HTTPS via Caddy for $DOMAIN"
 else
   open_port "$PORT"
-  if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${PORT}$" && ! docker ps --format '{{.Names}}' | grep -q '^moth-dashboard'; then warn "Port $PORT is already in use. Change DASHBOARD_PORT in $ENV_FILE."; fi
   ok "Dashboard exposed on port $PORT"
 fi
 
@@ -451,10 +469,11 @@ ok "Management CLI installed: moth"
 step "Starting MOTH"
 cd "$MOTH_DIR"
 if [[ $NO_START == 1 ]]; then warn "--no-start given; run 'moth start' when ready."; else
-  if [[ $FORCE_BUILD != 1 ]] && run docker compose pull --quiet bot dashboard migrate; then ok "Pulled images ($IMAGE_VERSION)"
+  if [[ $FORCE_BUILD != 1 ]] && run docker compose pull --quiet bot dashboard migrate; then ok "Downloaded ready-made images (${IMAGE_VERSION:0:16}) — no build needed"
   else
     info "Building images locally (first build takes a few minutes)…"
-    run docker compose build bot dashboard || die "Image build failed."
+    # Low priority so a build never starves the running bot; one build at a time to cap RAM.
+    COMPOSE_PARALLEL_LIMIT=1 run nice -n 15 docker compose build bot dashboard || die "Image build failed."
     ok "Images built"
   fi
   run docker compose pull --quiet postgres || true
@@ -474,7 +493,7 @@ fi
 # ─── 14. Verify ───
 step "Verifying installation"
 if [[ $NO_START == 0 ]]; then
-  DP="$(get_env DASHBOARD_PORT)"; HEALTH_URL="http://127.0.0.1:${DP:-3000}/api/health"
+  DP="$(get_env DASHBOARD_PORT)"; HEALTH_URL="http://127.0.0.1:${DP:-$DEFAULT_PORT}/api/health"
   DASH_OK=0; BOT_STATE=""
   for _ in $(seq 1 90); do
     if [[ $DASH_OK == 0 ]]; then
@@ -507,6 +526,7 @@ ${C_R}━━━━━━━━━━━━━━━━━━━━━━━━�
 
   ${C_B}One more step:${C_0} in the Discord Developer Portal → OAuth2 → Redirects, add
                 ${C_B}${DASH_URL}/api/auth/callback${C_0}
+$( [[ $PORT_CHANGED == 1 ]] && printf '\n  %s⚠ The dashboard moved to port %s.%s Add the redirect above in the Developer\n    Portal (you can delete the old :3000 one), or dashboard login will fail.\n' "$C_R" "$PORT" "$C_0" )
 
   ${C_D}Manage:   moth status · moth logs · moth update · moth backup · moth help
   Config:   ${ENV_FILE}

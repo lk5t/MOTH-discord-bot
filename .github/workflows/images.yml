@@ -1,0 +1,70 @@
+name: Images
+# Ready-made images for every commit on main, so servers download updates
+# instead of building them (building is slow and heavy on small VPSes).
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [bot, dashboard]
+        platform:
+          - { arch: linux/amd64, runner: ubuntu-24.04, slug: amd64 }
+          - { arch: linux/arm64, runner: ubuntu-24.04-arm, slug: arm64 }
+    runs-on: ${{ matrix.platform.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platform.arch }}
+          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/moth-${{ matrix.target }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.target }}-${{ matrix.platform.slug }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}-${{ matrix.platform.slug }}
+      - run: |
+          mkdir -p /tmp/digests
+          echo "${{ steps.build.outputs.digest }}" > "/tmp/digests/${{ matrix.target }}-${{ matrix.platform.slug }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.target }}-${{ matrix.platform.slug }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        target: [bot, dashboard]
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: "digest-${{ matrix.target }}-*", path: /tmp/digests, merge-multiple: true }
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - name: Tag multi-arch image
+        run: |
+          IMG="ghcr.io/${{ github.repository_owner }}/moth-${{ matrix.target }}"
+          IMG="${IMG,,}"
+          docker buildx imagetools create \
+            -t "$IMG:sha-${{ github.sha }}" -t "$IMG:edge" -t "$IMG:latest" \
+            $(for f in /tmp/digests/*; do printf '%s@%s ' "$IMG" "$(cat "$f")"; done)
+          docker buildx imagetools inspect "$IMG:sha-${{ github.sha }}"

@@ -27,7 +27,16 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
-    shm_size: 256mb
+    shm_size: 128mb
+    # Tuned for small servers: MOTH needs very little from Postgres.
+    command: >-
+      postgres -c max_connections=40 -c shared_buffers=48MB -c effective_cache_size=128MB
+      -c work_mem=2MB -c maintenance_work_mem=16MB -c wal_buffers=1MB -c max_wal_size=256MB
+      -c min_wal_size=64MB -c checkpoint_completion_target=0.9 -c max_worker_processes=2
+      -c max_parallel_workers=1 -c max_parallel_workers_per_gather=0 -c jit=off
+      -c autovacuum_naptime=5min -c track_activities=on -c log_min_duration_statement=2000
+    mem_limit: ${MOTH_DB_MEMORY:-320m}
+    cpus: ${MOTH_DB_CPUS:-0.5}
 
   # One-shot: applies database migrations before the app services start.
   migrate:
@@ -43,6 +52,14 @@ services:
     <<: *app
     image: ${MOTH_IMAGE_PREFIX:-ghcr.io/lk5t/moth}-bot:${MOTH_VERSION:-latest}
     build: { context: ., target: bot }
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-moth}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-moth}
+      BOT_INTERNAL_URL: http://bot:4100
+      MOTH_VERSION: ${MOTH_VERSION:-latest}
+      NODE_OPTIONS: --max-old-space-size=${MOTH_BOT_HEAP_MB:-256}
+      UV_THREADPOOL_SIZE: "2"
+    mem_limit: ${MOTH_BOT_MEMORY:-420m}
+    cpus: ${MOTH_BOT_CPUS:-1.0}
     depends_on:
       postgres: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
@@ -53,8 +70,17 @@ services:
     <<: *app
     image: ${MOTH_IMAGE_PREFIX:-ghcr.io/lk5t/moth}-dashboard:${MOTH_VERSION:-latest}
     build: { context: ., target: dashboard }
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-moth}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-moth}
+      BOT_INTERNAL_URL: http://bot:4100
+      MOTH_VERSION: ${MOTH_VERSION:-latest}
+      NODE_OPTIONS: --max-old-space-size=${MOTH_DASHBOARD_HEAP_MB:-160}
+      UV_THREADPOOL_SIZE: "2"
+    mem_limit: ${MOTH_DASHBOARD_MEMORY:-300m}
+    cpus: ${MOTH_DASHBOARD_CPUS:-0.5}
     ports:
-      - "${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_PORT:-3000}:3000"
+      # 29468: high, outside Linux's ephemeral range (32768+) and not used by common software.
+      - "${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_PORT:-29468}:3000"
     depends_on:
       postgres: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
@@ -65,12 +91,15 @@ services:
     profiles: ["local-ai"]
     restart: unless-stopped
     environment:
-      OLLAMA_CONTEXT_LENGTH: "8192"   # room for the Architect's server description + blueprint
-      OLLAMA_KEEP_ALIVE: "${OLLAMA_KEEP_ALIVE:-10m}"   # unload the model when idle so it doesn't hold RAM
+      OLLAMA_CONTEXT_LENGTH: "${OLLAMA_CONTEXT_LENGTH:-4096}"   # enough for MOTH's compact prompts; half the memory of 8k
+      OLLAMA_KEEP_ALIVE: "${OLLAMA_KEEP_ALIVE:-3m}"   # unload the model soon after use so it doesn't hold RAM
       OLLAMA_NUM_PARALLEL: "1"
       OLLAMA_MAX_LOADED_MODELS: "1"
-    # Leave CPU free for the bot and dashboard while the AI is thinking (set by the installer: cores − 1).
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: q8_0      # halves the context memory with no noticeable quality loss
+    # Leave CPU for the bot, dashboard and anything else on the server (installer sets half the cores).
     cpus: ${OLLAMA_CPUS:-1}
+    mem_limit: ${OLLAMA_MEMORY:-6g}
     volumes:
       - ollama-data:/root/.ollama
     healthcheck:
