@@ -9,9 +9,9 @@ import { Button, Chip } from "@/components/ui";
 
 type Nav = { key: string; label: string };
 const GROUPS: { label: string; keys: string[] }[] = [
-  { label: "Server", keys: ["overview", "architect", "analytics"] },
+  { label: "Server", keys: ["overview", "setup", "architect", "analytics"] },
   { label: "Protection", keys: ["moderation", "security"] },
-  { label: "Engage", keys: ["tickets", "automation", "commands", "members"] },
+  { label: "Engage", keys: ["tools", "tickets", "automation", "commands", "members"] },
   { label: "Configure", keys: ["ai", "settings", "system"] },
 ];
 

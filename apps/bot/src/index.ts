@@ -19,6 +19,11 @@ import { trackTicketActivity } from "./modules/tickets.js";
 import { startScheduler, stopScheduler } from "./modules/scheduler.js";
 import { addCurrency } from "./modules/economy.js";
 import { getGuildConfig } from "@moth/core";
+import * as serverLogs from "./modules/serverLogs.js";
+import { loadTempVoice, onTempVoiceDeleted, onTempVoiceState } from "./modules/tempVoice.js";
+import { handleSuggestionMessage } from "./modules/suggestions.js";
+import { onStarboardReaction } from "./modules/starboard.js";
+import { applyChannelRules, handleSticky, refreshStickies, updateStatsChannels } from "./modules/channelTools.js";
 
 process.on("unhandledRejection", (err) => log.error({ err }, "unhandled rejection"));
 process.on("uncaughtException", (err) => { log.fatal({ err }, "uncaught exception — exiting for supervisor restart"); process.exit(1); });
@@ -30,7 +35,7 @@ log.info("database ready");
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildModeration, GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMessageReactions, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMessageReactions, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.DirectMessages, GatewayIntentBits.GuildInvites,
   ],
   partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.GuildMember, Partials.User],
   makeCache: Options.cacheWithLimits({ ...Options.DefaultMakeCacheSettings, MessageManager: 200 }),
@@ -55,11 +60,13 @@ client.once(Events.ClientReady, async (c) => {
   await startScheduledAutomations(ids);
   analytics.start();
   startScheduler();
+  await loadTempVoice().catch((err) => log.warn({ err }, "temp voice recovery failed"));
+  for (const g of c.guilds.cache.values()) void serverLogs.cacheInvites(g);
   runtime.ready = true;
   log.info("MOTH is ready");
 });
 
-client.on(Events.GuildCreate, async (g) => { await register(g); await syncGuildCommands(g); await startScheduledAutomations([g.id]); log.info({ guild: g.id, name: g.name }, "joined guild"); });
+client.on(Events.GuildCreate, async (g) => { await register(g); void serverLogs.cacheInvites(g); await syncGuildCommands(g); await startScheduledAutomations([g.id]); log.info({ guild: g.id, name: g.name }, "joined guild"); });
 client.on(Events.GuildDelete, async (g) => { await getDb().update(guilds).set({ active: false, leftAt: new Date() }).where(eq(guilds.id, g.id)); log.info({ guild: g.id }, "left guild"); });
 client.on(Events.GuildUpdate, (_o, g) => void register(g));
 client.on(Events.InteractionCreate, (i) => void handleInteraction(i));
@@ -68,8 +75,15 @@ client.on(Events.MessageCreate, async (message) => {
   if (!message.inGuild()) return;
   try {
     analytics.message(message.guildId, message.channelId, message.author.id);
-    if (message.author.bot) return;
+    void handleSticky(message);
+    if (message.author.bot) {
+      // Bot messages can still trigger automations that opt in (e.g. bump reminders).
+      void fireAutomations(message.guild, "message", { member: message.member, message, channel: message.channel });
+      return;
+    }
     if (await checkMessage(message)) return; // removed by automod
+    if (await handleSuggestionMessage(message)) return;
+    if (await applyChannelRules(message)) return;
     void trackTicketActivity(message);
     void handleMessageXp(message);
     void (async () => { const cfg = await getGuildConfig(message.guildId); if (cfg.economy.enabled && cfg.economy.messageReward) await addCurrency(message.guildId, message.author.id, cfg.economy.messageReward); })().catch(() => undefined);
@@ -78,26 +92,44 @@ client.on(Events.MessageCreate, async (message) => {
     await handleAIMessage(message);
   } catch (err) { log.warn({ err }, "message handling failed"); }
 });
-client.on(Events.MessageUpdate, async (_old, message) => {
+client.on(Events.MessageUpdate, async (old, message) => {
   if (!message.inGuild() || message.partial || message.author.bot) return;
+  serverLogs.logMessageEdit(old, message);
   await checkMessage(message).catch(() => undefined);
+});
+client.on(Events.MessageDelete, (message) => {
+  serverLogs.logMessageDelete(message);
+  if (message.inGuild() && !message.author?.bot) void fireAutomations(message.guild, "message_delete", { member: message.member, user: message.author, channel: message.channel, text: message.content ?? "" });
+});
+client.on(Events.MessageBulkDelete, (messages, channel) => serverLogs.logBulkDelete(messages, channel));
+client.on(Events.ThreadCreate, async (thread, newly) => {
+  if (!newly) return;
+  const owner = thread.ownerId ? await thread.guild.members.fetch(thread.ownerId).catch(() => null) : null;
+  if (owner?.user.bot) return;
+  const starter = await thread.fetchStarterMessage().catch(() => null);
+  void fireAutomations(thread.guild, "thread_create", { member: owner, user: owner?.user, channel: thread, parentId: thread.parentId, text: starter?.content ?? thread.name });
 });
 
 client.on(Events.GuildMemberAdd, async (member) => {
   analytics.join(member.guild.id);
   await securityJoin(member).catch((err) => log.warn({ err }, "security join check failed"));
   if (!member.guild.members.cache.has(member.id)) return; // removed by raid protection
+  const invite = await serverLogs.resolveJoinInvite(member).catch(() => null);
+  serverLogs.logMemberJoin(member, invite);
   await onJoin(member).catch((err) => log.warn({ err }, "welcome failed"));
-  void fireAutomations(member.guild, "member_join", { member, user: member.user });
+  void fireAutomations(member.guild, "member_join", { member, user: member.user, invite });
   void publishEvent("member.joined", member.guild.id, { userId: member.id, memberCount: member.guild.memberCount });
 });
 client.on(Events.GuildMemberRemove, async (member) => {
   analytics.leave(member.guild.id);
   await onLeave(member).catch(() => undefined);
+  serverLogs.logMemberLeave(member);
+  void serverLogs.markInviteLeft(member.guild.id, member.id);
   void fireAutomations(member.guild, "member_leave", { user: member.user });
   void publishEvent("member.left", member.guild.id, { userId: member.id, memberCount: member.guild.memberCount });
 });
 client.on(Events.GuildMemberUpdate, (oldM, newM) => {
+  serverLogs.logMemberUpdate(oldM, newM);
   if (oldM.partial) return;
   for (const r of newM.roles.cache.keys()) if (!oldM.roles.cache.has(r)) void fireAutomations(newM.guild, "role_added", { member: newM, roleId: r });
   for (const r of oldM.roles.cache.keys()) if (!newM.roles.cache.has(r)) void fireAutomations(newM.guild, "role_removed", { member: newM, roleId: r });
@@ -105,6 +137,7 @@ client.on(Events.GuildMemberUpdate, (oldM, newM) => {
 });
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
   await onReaction(reaction, user, true).catch(() => undefined);
+  onStarboardReaction(reaction, user);
   const guild = reaction.message.guild;
   if (guild && !user.bot) {
     const member = await guild.members.fetch(user.id).catch(() => null);
@@ -112,12 +145,14 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     void fireAutomations(guild, "reaction_add", { member, user: member?.user, emoji: reaction.emoji.id ? `<:${reaction.emoji.name}:${reaction.emoji.id}>` : reaction.emoji.name ?? "", message: msg?.inGuild() ? msg : null, channel: reaction.message.channel as never });
   }
 });
-client.on(Events.MessageReactionRemove, (reaction, user) => void onReaction(reaction, user, false).catch(() => undefined));
+client.on(Events.MessageReactionRemove, (reaction, user) => { void onReaction(reaction, user, false).catch(() => undefined); onStarboardReaction(reaction, user); });
 
 // Voice tracking: XP + analytics minutes, and voice triggers.
 const voiceSessions = new Map<string, number>();
 client.on(Events.VoiceStateUpdate, async (oldS, newS) => {
   const key = `${newS.guild.id}:${newS.id}`;
+  serverLogs.logVoice(oldS, newS);
+  void onTempVoiceState(oldS, newS).catch((err) => log.warn({ err }, "temp voice failed"));
   if (!oldS.channelId && newS.channelId) { voiceSessions.set(key, Date.now()); void fireAutomations(newS.guild, "voice_join", { member: newS.member, channel: newS.channel }); }
   if (oldS.channelId && !newS.channelId) {
     void fireAutomations(newS.guild, "voice_leave", { member: oldS.member, channel: oldS.channel });
@@ -136,9 +171,20 @@ client.on(Events.VoiceStateUpdate, async (oldS, newS) => {
 });
 
 // Anti-nuke monitoring.
-client.on(Events.ChannelDelete, (ch) => { if ("guild" in ch && ch.guild) void trackDestructive(ch.guild, "channel", AuditLogEvent.ChannelDelete); });
-client.on(Events.GuildRoleDelete, (role) => void trackDestructive(role.guild, "role", AuditLogEvent.RoleDelete));
-client.on(Events.GuildBanAdd, (ban) => void trackDestructive(ban.guild, "ban", AuditLogEvent.MemberBanAdd));
+client.on(Events.ChannelDelete, (ch) => {
+  void onTempVoiceDeleted(ch.id);
+  serverLogs.logChannel(ch, "deleted");
+  if ("guild" in ch && ch.guild) void trackDestructive(ch.guild, "channel", AuditLogEvent.ChannelDelete);
+});
+client.on(Events.GuildRoleDelete, (role) => { serverLogs.logRole(role, "deleted"); void trackDestructive(role.guild, "role", AuditLogEvent.RoleDelete); });
+client.on(Events.GuildBanAdd, (ban) => { serverLogs.logBan(ban, true); void trackDestructive(ban.guild, "ban", AuditLogEvent.MemberBanAdd); });
+client.on(Events.GuildBanRemove, (ban) => serverLogs.logBan(ban, false));
+client.on(Events.ChannelCreate, (ch) => serverLogs.logChannel(ch, "created"));
+client.on(Events.ChannelUpdate, (a, b) => serverLogs.logChannelUpdate(a, b));
+client.on(Events.GuildRoleCreate, (role) => serverLogs.logRole(role, "created"));
+client.on(Events.GuildRoleUpdate, (a, b) => serverLogs.logRoleUpdate(a, b));
+client.on(Events.InviteCreate, (inv) => serverLogs.onInviteCreate(inv));
+client.on(Events.InviteDelete, (inv) => serverLogs.onInviteDelete(inv));
 
 client.on(Events.ShardDisconnect, (_e, id) => log.warn({ shard: id }, "gateway disconnected"));
 client.on(Events.ShardReconnecting, (id) => log.info({ shard: id }, "gateway reconnecting"));
@@ -149,7 +195,11 @@ client.on(Events.Warn, (m) => log.warn(m));
 // Dashboard → bot synchronisation.
 const events = new EventSubscriber(env.DATABASE_URL, (m) => log.warn(m));
 events.on((e) => {
-  if (e.type === "config.updated") invalidateGuildConfig(e.guildId);
+  if (e.type === "config.updated") {
+    invalidateGuildConfig(e.guildId);
+    const g = client.guilds.cache.get(e.guildId);
+    if (g) setTimeout(() => { void refreshStickies(g).catch(() => undefined); void updateStatsChannels(g).catch(() => undefined); }, 1500);
+  }
   if (e.type === "automations.updated") invalidateAutomations(e.guildId);
   if (e.type === "commands.updated") {
     invalidateCustomCommands(e.guildId);

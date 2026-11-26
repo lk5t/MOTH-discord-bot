@@ -1,3 +1,5 @@
+import { runSetup } from "../modules/setup.js";
+import { statsValues } from "../modules/channelTools.js";
 import http from "node:http";
 import { ChannelType, PermissionFlagsBits, type Guild } from "discord.js";
 import { z } from "zod";
@@ -154,6 +156,8 @@ route("POST", "/v1/guilds/:guildId/messages", async ({ guild, body }) => {
 });
 
 // ── Commands & automations ──
+route("POST", "/v1/guilds/:guildId/setup", async ({ guild, body }) => runSetup(guild, Array.isArray(body.packs) ? body.packs.map(String) : [], { dry: !!body.dry, actorId: body.actorId ? String(body.actorId) : null }));
+route("GET", "/v1/guilds/:guildId/stats-preview", async ({ guild }) => statsValues(guild));
 route("POST", "/v1/guilds/:guildId/commands/sync", async ({ guild }) => ({ registered: await syncGuildCommands(guild) }));
 route("GET", "/v1/commands/builtin", async () => [...BUILTIN_NAMES], false);
 route("POST", "/v1/guilds/:guildId/automations/:automationId/test", async ({ guild, params, body }) => {

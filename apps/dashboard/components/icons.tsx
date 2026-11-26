@@ -5,6 +5,9 @@ const base = (d: React.ReactNode) => function Icon(p: SVGProps<SVGSVGElement>) {
 };
 
 export const I = {
+  setup: base(<path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" />),
+  tools: base(<><path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L3 17.8V21h3.2l6.3-6.3a4 4 0 0 0 5.2-5.4l-2.5 2.5-2.6-.7-.7-2.6 2.8-2.2Z" /></>),
+  book: base(<><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5v14Z" /><path d="M20 17v4H6.5A2.5 2.5 0 0 1 4 18.5" /></>),
   overview: base(<><rect x="3" y="3" width="7" height="9" rx="1.5" /><rect x="14" y="3" width="7" height="5" rx="1.5" /><rect x="14" y="12" width="7" height="9" rx="1.5" /><rect x="3" y="16" width="7" height="5" rx="1.5" /></>),
   architect: base(<><path d="M12 2 2 7l10 5 10-5-10-5Z" /><path d="m2 17 10 5 10-5" /><path d="m2 12 10 5 10-5" /></>),
   moderation: base(<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" /><path d="m9 12 2 2 4-4" /></>),

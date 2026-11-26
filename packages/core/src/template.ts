@@ -99,6 +99,8 @@ export const PLACEHOLDER_HELP: { key: string; description: string }[] = [
   { key: "{args.name}", description: "Slash command option value" },
   { key: "{level} / {xp}", description: "Leveling stats (when available)" },
   { key: "{balance}", description: "Economy balance (when available)" },
+  { key: "{message}", description: "The triggering message's text (automations)" },
+  { key: "{invite} / {inviter}", description: "Invite code used / who invited (join automations)" },
   { key: "{random:a|b|c}", description: "Random choice" },
   { key: "{randnum:1-100}", description: "Random number" },
   { key: "{date} / {time} / {timestamp}", description: "Current date/time" },

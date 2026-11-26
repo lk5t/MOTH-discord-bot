@@ -1,7 +1,8 @@
 "use client";
 import type { AutomationAction, AutomationCondition, AutomationDefinition, AutomationStep, AutomationTrigger, MessageTemplate } from "@moth/core/shared";
 import { ACTION_LABELS, CONDITION_LABELS, TRIGGER_LABELS } from "@moth/core/shared";
-import { Button, Field, Input, NumberInput, Select, Switch } from "@/components/ui";
+import { Button, Field, Input, NumberInput, Select, Switch, Textarea } from "@/components/ui";
+import { RoleMulti } from "@/components/pickers";
 import { ChannelMulti, ChannelSelect, RoleSelect } from "@/components/pickers";
 import { MessageEditor } from "@/components/embed-editor";
 import { I } from "@/components/icons";
@@ -17,6 +18,7 @@ export const defaultTrigger = (type: AutomationTrigger["type"]): AutomationTrigg
     case "voice_join": case "voice_leave": return { type, channelIds: [] };
     case "schedule": return { type, cron: "0 12 * * *", timezone: "UTC" };
     case "level_up": return { type };
+    case "message_delete": case "thread_create": return { type, channelIds: [] };
     default: return { type } as AutomationTrigger;
   }
 };
@@ -29,6 +31,14 @@ const defaultAction = (type: AutomationAction["type"]): AutomationAction => {
     case "create_thread": return { type, name: "Discussion" }; case "log": return { type, message: "{user} triggered an automation" };
     case "set_channel_name": return { type, channelId: "", name: "Members: {server.members}" };
     case "add_xp": case "add_currency": return { type, amount: 10 };
+    case "toggle_role": return { type, roleId: "" };
+    case "kick": return { type, reason: "Automation" };
+    case "ban": return { type, reason: "Automation", deleteMessageSeconds: 0 };
+    case "lock_channel": case "unlock_channel": return { type };
+    case "slowmode": return { type, seconds: 10 };
+    case "move_voice": return { type, channelId: "" };
+    case "random_message": return { type, messages: ["Hello {user}!", "Hey there {user.name} 👋"] };
+    case "webhook": return { type, url: "https://", body: '{"content":"{user.name} triggered {automation}"}' };
     default: return { type } as AutomationAction;
   }
 };
@@ -38,6 +48,9 @@ const defaultCondition = (type: AutomationCondition["type"]): AutomationConditio
     case "account_age_days": return { type, op: "gt", days: 7 }; case "message_matches": return { type, regex: "" };
     case "chance": return { type, percent: 50 }; case "is_bot": return { type, value: false };
     case "member_count": return { type, op: "gt", value: 100 }; case "level_at_least": return { type, level: 5 };
+    case "has_any_role": return { type, roleIds: [] }; case "joined_days": return { type, op: "lt", days: 1 };
+    case "time_between": return { type, from: 9, to: 17 }; case "weekday": return { type, days: [1, 2, 3, 4, 5] };
+    case "invite_code": return { type, codes: [] };
   }
 };
 
@@ -49,6 +62,8 @@ function TriggerForm({ t, set }: { t: AutomationTrigger; set: (t: AutomationTrig
     {(t.type === "role_added" || t.type === "role_removed") && <Field label="Role"><RoleSelect value={t.roleId} onChange={(v) => set({ ...t, roleId: v ?? "" })} /></Field>}
     {(t.type === "voice_join" || t.type === "voice_leave") && <Field label="Voice channels" hint="Empty = any"><ChannelMulti value={t.channelIds} onChange={(v) => set({ ...t, channelIds: v })} /></Field>}
     {t.type === "schedule" && <div className="grid g2"><Field label="Cron expression" hint="min hour day month weekday — e.g. 0 18 * * 5 = Fridays 18:00"><Input className="mono" value={t.cron} onChange={(e) => set({ ...t, cron: e.target.value })} /></Field><Field label="Timezone"><Input value={t.timezone} onChange={(e) => set({ ...t, timezone: e.target.value })} /></Field></div>}
+    {(t.type === "message_delete" || t.type === "thread_create") && <Field label={t.type === "thread_create" ? "In forums / channels" : "Channels"} hint="Empty = any"><ChannelMulti value={t.channelIds} onChange={(v) => set({ ...t, channelIds: v })} /></Field>}
+    {t.type === "message" && <label className="row small faint"><input type="checkbox" checked={!t.ignoreBots} onChange={(e) => set({ ...t, ignoreBots: !e.target.checked })} />Also react to messages from other bots</label>}
     {t.type === "level_up" && <Field label="Specific level" hint="Empty = any level"><Input type="number" value={t.level ?? ""} onChange={(e) => set({ ...t, level: e.target.value ? Number(e.target.value) : undefined })} /></Field>}
   </div>;
 }
@@ -64,6 +79,11 @@ function ConditionForm({ c, set }: { c: AutomationCondition; set: (c: Automation
     {c.type === "is_bot" && <div className="row"><Switch checked={c.value} onChange={(v) => set({ ...c, value: v })} /> <span className="small">{c.value ? "is a bot" : "is not a bot"}</span></div>}
     {c.type === "member_count" && <div className="grid g2"><Select value={c.op} onChange={(v) => set({ ...c, op: v as "gt" })} options={opts({ gt: "More than", lt: "Fewer than" })} /><NumberInput value={c.value} onChange={(v) => set({ ...c, value: v })} /></div>}
     {c.type === "level_at_least" && <NumberInput value={c.level} min={0} onChange={(v) => set({ ...c, level: v })} />}
+    {c.type === "has_any_role" && <Field label="Roles"><RoleMulti value={c.roleIds} onChange={(v) => set({ ...c, roleIds: v })} /></Field>}
+    {c.type === "joined_days" && <div className="grid g2"><Select value={c.op} onChange={(v) => set({ ...c, op: v as "gt" })} options={opts({ gt: "In server longer than (days)", lt: "In server less than (days)" })} /><NumberInput value={c.days} min={0} onChange={(v) => set({ ...c, days: v })} /></div>}
+    {c.type === "time_between" && <div className="grid g2"><Field label="From hour (0–23)"><NumberInput value={c.from} min={0} max={23} onChange={(v) => set({ ...c, from: v })} /></Field><Field label="Until hour (1–24)" hint="Uses the server timezone"><NumberInput value={c.to} min={0} max={24} onChange={(v) => set({ ...c, to: v })} /></Field></div>}
+    {c.type === "weekday" && <div className="row wrap">{["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d, n) => <button key={d} type="button" className={`chip ${c.days.includes(n) ? "crim" : ""}`} style={{ cursor: "pointer" }} onClick={() => set({ ...c, days: c.days.includes(n) ? c.days.filter((x) => x !== n) : [...c.days, n].sort() })}>{d}</button>)}</div>}
+    {c.type === "invite_code" && <Field label="Invite codes" hint="Comma separated, e.g. partner123"><Input value={c.codes.join(", ")} onChange={(e) => set({ ...c, codes: e.target.value.split(",").map((x) => x.trim().replace(/^.*\//, "")).filter(Boolean) })} /></Field>}
   </div>;
 }
 
@@ -80,6 +100,14 @@ export function ActionForm({ a, set }: { a: AutomationAction; set: (a: Automatio
     {a.type === "log" && <Field label="Log message"><Input value={a.message} onChange={(e) => set({ ...a, message: e.target.value })} /></Field>}
     {a.type === "set_channel_name" && <div className="grid g2"><Field label="Channel"><ChannelSelect kind="any" value={a.channelId} onChange={(v) => set({ ...a, channelId: v ?? "" })} /></Field><Field label="New name" hint="{server.members} supported"><Input value={a.name} onChange={(e) => set({ ...a, name: e.target.value })} /></Field></div>}
     {(a.type === "add_xp" || a.type === "add_currency") && <Field label="Amount"><NumberInput value={a.amount} onChange={(v) => set({ ...a, amount: v })} /></Field>}
+    {a.type === "toggle_role" && <Field label="Role"><RoleSelect value={a.roleId} onChange={(v) => set({ ...a, roleId: v ?? "" })} /></Field>}
+    {a.type === "kick" && <Field label="Reason"><Input value={a.reason} onChange={(e) => set({ ...a, reason: e.target.value })} /></Field>}
+    {a.type === "ban" && <div className="grid g2"><Field label="Reason"><Input value={a.reason} onChange={(e) => set({ ...a, reason: e.target.value })} /></Field><Field label="Delete recent messages"><Select value={String(a.deleteMessageSeconds)} onChange={(v) => set({ ...a, deleteMessageSeconds: Number(v) })} options={[{ value: "0", label: "Don't delete" }, { value: "3600", label: "Last hour" }, { value: "86400", label: "Last 24h" }, { value: "604800", label: "Last 7 days" }]} /></Field></div>}
+    {(a.type === "lock_channel" || a.type === "unlock_channel") && <Field label="Channel" hint="Empty = the channel that triggered it"><ChannelSelect kind="any" value={a.channelId} onChange={(v) => set({ ...a, channelId: v ?? undefined })} placeholder="Trigger channel" /></Field>}
+    {a.type === "slowmode" && <div className="grid g2"><Field label="Channel" hint="Empty = trigger channel"><ChannelSelect value={a.channelId} onChange={(v) => set({ ...a, channelId: v ?? undefined })} placeholder="Trigger channel" /></Field><Field label="Seconds (0 = off)"><NumberInput value={a.seconds} min={0} max={21600} onChange={(v) => set({ ...a, seconds: v })} /></Field></div>}
+    {a.type === "move_voice" && <Field label="Voice channel"><ChannelSelect kind="voice" value={a.channelId} onChange={(v) => set({ ...a, channelId: v ?? "" })} /></Field>}
+    {a.type === "random_message" && <><Field label="Channel" hint="Empty = trigger channel"><ChannelSelect value={a.channelId} onChange={(v) => set({ ...a, channelId: v ?? undefined })} placeholder="Trigger channel" /></Field><Field label="Messages" hint="One per line — MOTH picks one at random"><Textarea value={a.messages.join("\n")} onChange={(e) => set({ ...a, messages: e.target.value.split("\n").filter((x) => x.trim()).slice(0, 25) })} /></Field></>}
+    {a.type === "webhook" && <><Field label="URL" hint="https only — e.g. a Zapier, Make or n8n webhook"><Input value={a.url} onChange={(e) => set({ ...a, url: e.target.value })} /></Field><Field label="Body" hint="JSON or text; placeholders supported"><Textarea className="mono" value={a.body} onChange={(e) => set({ ...a, body: e.target.value })} /></Field></>}
   </div>;
 }
 
@@ -111,7 +139,7 @@ export function WorkflowBuilder({ def, onChange }: { def: AutomationDefinition; 
             </div>
             {s.kind === "condition" && <ConditionForm c={s.condition} set={(c) => setStep(i, { ...s, condition: c })} />}
             {s.kind === "action" && <ActionForm a={s.action} set={(a) => setStep(i, { ...s, action: a })} />}
-            {s.kind === "delay" && <Field label="Wait (seconds)" hint="Max 15 minutes inside a run"><NumberInput value={s.seconds} min={1} max={86400} onChange={(v) => setStep(i, { ...s, seconds: v })} /></Field>}
+            {s.kind === "delay" && <Field label="Wait (seconds)" hint="Up to 24 hours — long waits survive restarts"><NumberInput value={s.seconds} min={1} max={86400} onChange={(v) => setStep(i, { ...s, seconds: v })} /></Field>}
           </div>
         </div>
       ))}

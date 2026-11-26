@@ -424,3 +424,66 @@ export const serviceHeartbeats = pgTable("service_heartbeats", {
   startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
   beatAt: timestamp("beat_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ───────────────────────── Server tools ─────────────────────────
+
+/** Join-to-create voice channels currently alive (so they are cleaned up after restarts). */
+export const tempVoiceChannels = pgTable("temp_voice_channels", {
+  channelId: text("channel_id").primaryKey(),
+  guildId: text("guild_id").notNull(),
+  ownerId: text("owner_id").notNull(),
+  panelMessageId: text("panel_message_id"),
+  createdAt: createdAt(),
+}, (t) => [index("temp_voice_guild").on(t.guildId)]);
+
+export const suggestions = pgTable("suggestions", {
+  id: serial("id").primaryKey(),
+  guildId: text("guild_id").notNull(),
+  number: integer("number").notNull(),
+  authorId: text("author_id").notNull(),
+  content: text("content").notNull(),
+  channelId: text("channel_id").notNull(),
+  messageId: text("message_id"),
+  threadId: text("thread_id"),
+  status: text("status").$type<"open" | "approved" | "denied" | "implemented" | "considering">().notNull().default("open"),
+  upvotes: integer("upvotes").notNull().default(0),
+  downvotes: integer("downvotes").notNull().default(0),
+  reviewerId: text("reviewer_id"),
+  response: text("response"),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (t) => [uniqueIndex("suggestions_number").on(t.guildId, t.number), index("suggestions_message").on(t.messageId)]);
+
+export const suggestionVotes = pgTable("suggestion_votes", {
+  suggestionId: integer("suggestion_id").notNull().references(() => suggestions.id, { onDelete: "cascade" }),
+  userId: text("user_id").notNull(),
+  value: integer("value").notNull(),
+}, (t) => [primaryKey({ columns: [t.suggestionId, t.userId] })]);
+
+export const starboardPosts = pgTable("starboard_posts", {
+  messageId: text("message_id").primaryKey(),
+  guildId: text("guild_id").notNull(),
+  channelId: text("channel_id").notNull(),
+  authorId: text("author_id").notNull(),
+  starboardMessageId: text("starboard_message_id"),
+  stars: integer("stars").notNull().default(0),
+  createdAt: createdAt(),
+}, (t) => [index("starboard_guild").on(t.guildId, t.stars)]);
+
+/** Which invite each member used (invite tracking). */
+export const memberInvites = pgTable("member_invites", {
+  guildId: text("guild_id").notNull(),
+  userId: text("user_id").notNull(),
+  code: text("code"),
+  inviterId: text("inviter_id"),
+  left: boolean("left").notNull().default(false),
+  joinedAt: createdAt(),
+}, (t) => [primaryKey({ columns: [t.guildId, t.userId] }), index("member_invites_inviter").on(t.guildId, t.inviterId)]);
+
+/** Small per-guild key/value state for features (sticky message ids, stats cache…). */
+export const featureState = pgTable("feature_state", {
+  guildId: text("guild_id").notNull(),
+  key: text("key").notNull(),
+  value: jsonb("value").notNull(),
+  updatedAt: updatedAt(),
+}, (t) => [primaryKey({ columns: [t.guildId, t.key] })]);

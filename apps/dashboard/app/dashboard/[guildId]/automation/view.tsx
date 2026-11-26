@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import type { AutomationDefinition, EmbedData } from "@moth/core/shared";
-import { TRIGGER_LABELS } from "@moth/core/shared";
+import { RECIPES, RECIPE_CATEGORIES, TRIGGER_LABELS, type Recipe } from "@moth/core/shared";
 import { useGuild, useGuildConfig } from "@/components/guild";
 import { api, timeAgo, useApi } from "@/components/hooks";
 import { Button, Card, Chip, Empty, Field, Input, Modal, NumberInput, PageHead, SaveBar, Select, Skeleton, Switch, Tabs, Textarea, ToggleRow, useConfirm, useToast } from "@/components/ui";
@@ -15,12 +15,12 @@ type Run = { id: number; automationId: string; status: string; trigger: string; 
 type Menu = { id?: string; name: string; channelId: string | null; messageId?: string | null; style: "reactions" | "buttons" | "select"; mode: "toggle" | "unique" | "add-only" | "remove-only"; embed: EmbedData; options: { roleId: string; label: string; emoji?: string; description?: string }[]; maxSelections?: number | null; requiredRoleIds: string[] };
 
 export function AutomationView() {
-  const [tab, setTab] = useState<"workflows" | "welcome" | "menus" | "runs">("workflows");
+  const [tab, setTab] = useState<"recipes" | "workflows" | "welcome" | "menus" | "runs">("recipes");
   return (
     <>
       <PageHead title="Automation" description="Event-driven workflows, schedules, welcome flows and role menus — build visually or describe them to MOTH AI." />
-      <Tabs value={tab} onChange={setTab} tabs={[{ value: "workflows", label: "Workflows" }, { value: "welcome", label: "Welcome & auto-roles" }, { value: "menus", label: "Role menus" }, { value: "runs", label: "Run log" }]} />
-      {tab === "workflows" && <Workflows />}{tab === "welcome" && <Welcome />}{tab === "menus" && <Menus />}{tab === "runs" && <Runs />}
+      <Tabs value={tab} onChange={setTab} tabs={[{ value: "recipes", label: "Recipes" }, { value: "workflows", label: "My workflows" }, { value: "welcome", label: "Welcome & auto-roles" }, { value: "menus", label: "Role menus" }, { value: "runs", label: "Run log" }]} />
+      {tab === "recipes" && <Recipes onDone={() => setTab("workflows")} />}{tab === "workflows" && <Workflows />}{tab === "welcome" && <Welcome />}{tab === "menus" && <Menus />}{tab === "runs" && <Runs />}
     </>
   );
 }
@@ -68,6 +68,42 @@ function Workflows() {
       <Modal open={!!test} onClose={() => setTest(null)} title={`Dry run · ${test?.status}`}><div className="small faint mb">Simulated with you as the member — no messages or roles were changed.</div><pre className="card flat small" style={{ whiteSpace: "pre-wrap", margin: 0 }}>{test?.log.join("\n")}</pre></Modal>
     </div>
   );
+}
+
+function Recipes({ onDone }: { onDone: () => void }) {
+  const { guildId } = useGuild();
+  const toast = useToast();
+  const [open, setOpen] = useState<Recipe | null>(null);
+  const [vals, setVals] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const start = (r: Recipe) => { setOpen(r); setVals(Object.fromEntries(r.params.map((p) => [p.key, p.default !== undefined ? String(p.default) : ""]))); };
+  const missing = open?.params.filter((p) => !p.optional && !vals[p.key]?.trim()) ?? [];
+  async function create() {
+    if (!open) return; setBusy(true);
+    try { const rows = await api<unknown[]>(`/api/guilds/${guildId}/automations/recipes`, { body: { key: open.key, params: vals } }); toast(`${rows.length > 1 ? `${rows.length} automations` : "Automation"} created and running`); setOpen(null); onDone(); }
+    catch (e) { toast((e as Error).message, true); } finally { setBusy(false); }
+  }
+  return <>
+    <div className="small faint mb">Pick a recipe, fill in a couple of fields and it starts working immediately. Every recipe becomes a normal workflow you can tweak later.</div>
+    {RECIPE_CATEGORIES.map((cat) => <div key={cat} className="mb">
+      <div className="field-label">{cat}</div>
+      <div className="grid g3">{RECIPES.filter((r) => r.category === cat).map((r) => <Card key={r.key} title={<span>{r.icon} {r.name}</span>} subtitle={r.description}>
+        <Button size="sm" variant="primary" icon={<I.plus />} onClick={() => start(r)}>Use recipe</Button>
+      </Card>)}</div>
+    </div>)}
+    <Modal open={!!open} onClose={() => setOpen(null)} title={open ? `${open.icon} ${open.name}` : ""} footer={<><Button onClick={() => setOpen(null)}>Cancel</Button><Button variant="primary" loading={busy} disabled={!!missing.length} onClick={create} icon={<I.check />}>Create</Button></>}>
+      {open && <div className="stack">
+        <div className="small muted">{open.description}</div>
+        {open.params.map((p) => <Field key={p.key} label={`${p.label}${p.optional ? " (optional)" : ""}`} hint={p.hint}>
+          {p.kind === "channel" ? <ChannelSelect value={vals[p.key] || null} onChange={(v) => setVals({ ...vals, [p.key]: v ?? "" })} />
+            : p.kind === "voice" ? <ChannelSelect kind="voice" value={vals[p.key] || null} onChange={(v) => setVals({ ...vals, [p.key]: v ?? "" })} />
+            : p.kind === "role" ? <RoleSelect value={vals[p.key] || null} onChange={(v) => setVals({ ...vals, [p.key]: v ?? "" })} />
+            : p.kind === "longtext" ? <Textarea value={vals[p.key] ?? ""} onChange={(e) => setVals({ ...vals, [p.key]: e.target.value })} />
+            : <Input type={p.kind === "number" ? "number" : "text"} value={vals[p.key] ?? ""} onChange={(e) => setVals({ ...vals, [p.key]: e.target.value })} />}
+        </Field>)}
+      </div>}
+    </Modal>
+  </>;
 }
 
 function Welcome() {

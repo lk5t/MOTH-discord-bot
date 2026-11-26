@@ -7,6 +7,7 @@ import {
   dashboardAccess, encryptSecret, getDb, getGuildConfigWithVersion, guildConfigSchema, guildConfigSections, guildState, maskSecret, memberLevels,
   economyAccounts, modCases, publishEvent, renderMessage, roleMenus, securityEvents, ticketPanels, tickets, ticketTranscripts, updateGuildConfig,
   userAchievements, logChange, blueprintSchema, messageTemplateSchema, embedSchema, type GuildConfigSection,
+  buildRecipe, suggestions, memberInvites, starboardPosts, tempVoiceChannels,
 } from "@moth/core";
 import { ApiError, body, json, requireLevel, type GuildCtx } from "./api";
 import { bot } from "./bot";
@@ -212,6 +213,46 @@ r("PATCH", "automations/:id", async (ctx) => { requireLevel(ctx, "admin"); const
 r("DELETE", "automations/:id", async (ctx) => { requireLevel(ctx, "admin"); await db().delete(automations).where(and(eq(automations.id, ctx.p.id), eq(automations.guildId, ctx.guildId))); await publishEvent("automations.updated", ctx.guildId, {}, "dashboard"); await audit(ctx, "automation.delete", ctx.p.id); return json({ ok: true }); });
 r("POST", "automations/:id/test", async (ctx) => { requireLevel(ctx, "admin"); const b = await body(ctx.req, z.object({ live: z.boolean().default(false) })); return json(await bot(`/guilds/${ctx.guildId}/automations/${ctx.p.id}/test`, { body: { userId: ctx.userId, live: b.live }, timeoutMs: 60_000 })); });
 r("POST", "automations/generate", async (ctx) => { requireLevel(ctx, "admin"); const b = await body(ctx.req, z.object({ prompt: z.string().min(3).max(2000) })); return json(await bot(`/guilds/${ctx.guildId}/ai/generate-automation`, { body: { ...b, actorId: ctx.userId }, timeoutMs: 120_000 })); });
+
+r("POST", "automations/recipes", async (ctx) => {
+  requireLevel(ctx, "admin");
+  const b = await body(ctx.req, z.object({ key: z.string(), params: z.record(z.string(), z.string()).default({}) }));
+  let outputs;
+  try { outputs = buildRecipe(b.key, { ...b.params }); } catch (e) { throw new ApiError(400, (e as Error).message); }
+  const rows = [];
+  for (const o of outputs) {
+    const def = automationSchema.safeParse(o.definition);
+    if (!def.success) throw new ApiError(400, `Recipe produced an invalid workflow: ${def.error.issues[0]?.message}`);
+    const [row] = await db().insert(automations).values({ guildId: ctx.guildId, name: o.name, description: o.description, enabled: true, definition: def.data, createdBy: ctx.userId }).returning();
+    rows.push(row);
+  }
+  await publishEvent("automations.updated", ctx.guildId, {}, "dashboard");
+  await audit(ctx, "automation.recipe", b.key, b.params);
+  return json(rows);
+});
+
+// ───────── Quick setup & server tools ─────────
+r("POST", "setup", async (ctx) => {
+  requireLevel(ctx, "admin");
+  const b = await body(ctx.req, z.object({ packs: z.array(z.string()).min(1).max(20), dry: z.boolean().default(true) }));
+  const out = await bot(`/guilds/${ctx.guildId}/setup`, { body: { ...b, actorId: ctx.userId }, timeoutMs: 180_000 });
+  if (!b.dry) await audit(ctx, "setup.apply", b.packs.join(","));
+  return json(out);
+});
+r("GET", "tools/summary", async (ctx) => {
+  requireLevel(ctx, "admin");
+  const g = ctx.guildId;
+  const [sugs, [sugStats], inviters, [invStats], stars, [voice], stats] = await Promise.all([
+    db().select().from(suggestions).where(eq(suggestions.guildId, g)).orderBy(desc(suggestions.createdAt)).limit(50),
+    db().select({ total: sql<number>`count(*)::int`, open: sql<number>`count(*) filter (where status in ('open','considering'))::int`, approved: sql<number>`count(*) filter (where status in ('approved','implemented'))::int` }).from(suggestions).where(eq(suggestions.guildId, g)),
+    db().select({ inviterId: memberInvites.inviterId, total: sql<number>`count(*)::int`, active: sql<number>`count(*) filter (where not ${memberInvites.left})::int` }).from(memberInvites).where(and(eq(memberInvites.guildId, g), sql`${memberInvites.inviterId} is not null`)).groupBy(memberInvites.inviterId).orderBy(sql`3 desc`).limit(10),
+    db().select({ tracked: sql<number>`count(*)::int`, unknown: sql<number>`count(*) filter (where ${memberInvites.code} is null)::int` }).from(memberInvites).where(eq(memberInvites.guildId, g)),
+    db().select().from(starboardPosts).where(and(eq(starboardPosts.guildId, g), sql`${starboardPosts.starboardMessageId} is not null`)).orderBy(desc(starboardPosts.stars)).limit(10),
+    db().select({ n: sql<number>`count(*)::int` }).from(tempVoiceChannels).where(eq(tempVoiceChannels.guildId, g)),
+    bot<Record<string, number>>(`/guilds/${g}/stats-preview`).catch(() => null),
+  ]);
+  return json({ suggestions: sugs, suggestionStats: sugStats, inviters, inviteStats: invStats, starboard: stars, activeVoiceRooms: voice.n, stats });
+});
 
 // ───────── Custom commands ─────────
 async function reserved(): Promise<Set<string>> { return new Set(await bot<string[]>("/commands/builtin").catch(() => [])); }

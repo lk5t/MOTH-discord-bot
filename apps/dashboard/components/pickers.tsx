@@ -17,9 +17,10 @@ export function ChannelSelect({ value, onChange, kind = "text", placeholder = "S
   );
 }
 
-export function ChannelMulti({ value, onChange, placeholder }: { value: string[]; onChange: (v: string[]) => void; placeholder?: string }) {
+export function ChannelMulti({ value, onChange, placeholder, kind }: { value: string[]; onChange: (v: string[]) => void; placeholder?: string; kind?: "voice" | "text" }) {
   const { channels } = useGuild();
-  return <MultiPicker value={value} onChange={onChange} placeholder={placeholder ?? "Add channels…"} options={channels.filter((c) => c.type !== "GuildCategory").map((c) => ({ value: c.id, label: `${c.type === "GuildVoice" ? "🔊 " : "#"}${c.name}` }))} />;
+  const isVoice = (t: string) => t === "GuildVoice" || t === "GuildStageVoice";
+  return <MultiPicker value={value} onChange={onChange} placeholder={placeholder ?? "Add channels…"} options={channels.filter((c) => c.type !== "GuildCategory" && (!kind || (kind === "voice" ? isVoice(c.type) : !isVoice(c.type)))).map((c) => ({ value: c.id, label: `${c.type === "GuildVoice" ? "🔊 " : "#"}${c.name}` }))} />;
 }
 
 export function RoleSelect({ value, onChange, placeholder = "Select a role", allowNone = true }: { value: string | null | undefined; onChange: (v: string | null) => void; placeholder?: string; allowNone?: boolean }) {

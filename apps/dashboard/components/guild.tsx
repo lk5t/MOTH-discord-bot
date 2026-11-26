@@ -49,6 +49,11 @@ export function useGuildConfig() {
     if (!current) return;
     setDraft({ ...current, [section]: { ...current[section], ...patch } });
   }
+  /** Replaces a whole section (used for list sections like channel rules). */
+  function set<K extends keyof GuildConfig>(section: K, value: GuildConfig[K]) {
+    if (!current) return;
+    setDraft({ ...current, [section]: value });
+  }
   async function save() {
     if (!draft || !dirtySections.length) return;
     setSaving(true);
@@ -58,5 +63,5 @@ export function useGuildConfig() {
     } catch (e) { toast((e as Error).message, true); if ((e as { status?: number }).status === 409) { setDraft(null); void q.reload(); } }
     finally { setSaving(false); }
   }
-  return { config: current, loading: q.loading, error: q.error, update, save, reset: () => setDraft(null), dirty: dirtySections.length > 0, saving, version: q.data?.version };
+  return { config: current, loading: q.loading, error: q.error, update, set, save, reset: () => setDraft(null), dirty: dirtySections.length > 0, saving, version: q.data?.version };
 }

@@ -187,3 +187,51 @@ test("generated text keeps only real placeholders", () => {
   assert.equal(sanitizePlaceholders("Hi {user}, see #{general} on {server}"), "Hi {user}, see #general on {server}");
   assert.equal(sanitizePlaceholders("IP: {server}play.example.com {random:a|b}"), "IP: play.example.com {random:a|b}");
 });
+
+// ───────── Recipes & setup packs ─────────
+import { RECIPES, buildRecipe } from "../automation/recipes.js";
+import { SETUP_PACKS, setupRecommendations } from "../setup/packs.js";
+import { automationSchema as autoSchema } from "../automation/schema.js";
+import { defaultGuildConfig as defaults, guildConfigSchema as cfgSchema } from "../guild-config.js";
+import { deepMerge as merge } from "../util.js";
+
+test("every recipe builds valid automations", () => {
+  const fake: Record<string, string> = { channel: "111111111111111111", voice: "222222222222222222", role: "333333333333333333" };
+  for (const r of RECIPES) {
+    const params = Object.fromEntries(r.params.map((p) => [p.key, fake[p.kind] ?? (p.default !== undefined ? String(p.default) : "test")]));
+    const out = buildRecipe(r.key, params);
+    assert.ok(out.length >= 1, r.key);
+    for (const o of out) {
+      const parsed = autoSchema.safeParse(o.definition);
+      assert.ok(parsed.success, `${r.key}: ${parsed.success ? "" : JSON.stringify(parsed.error.issues[0])}`);
+    }
+  }
+});
+
+test("recipes reject missing required inputs", () => {
+  assert.throws(() => buildRecipe("delayed-member-role", {}), /required/);
+});
+
+test("recipe schedules use the requested time and days", () => {
+  const [o] = buildRecipe("weekly-event", { channel: "111111111111111111", days: "mon, wed", time: "19:30", tz: "Europe/London", text: "Hi" });
+  assert.deepEqual(o.definition.trigger, { type: "schedule", cron: "30 19 * * 1,3", timezone: "Europe/London" });
+});
+
+test("every setup pack produces a valid config", () => {
+  for (const p of SETUP_PACKS) {
+    const ids = Object.fromEntries([...p.channels, ...p.roles].map((x, i) => [x.key, String(100000000000000000n + BigInt(i))]));
+    const patch = p.config(ids, defaults());
+    const next = merge(defaults(), patch);
+    const parsed = cfgSchema.safeParse(next);
+    assert.ok(parsed.success, `${p.key}: ${parsed.success ? "" : JSON.stringify(parsed.error.issues[0])}`);
+  }
+});
+
+test("recommendations clear once the essentials pack is applied", () => {
+  const c = defaults();
+  assert.ok(setupRecommendations(c).some((r) => r.key === "logs"));
+  const p = SETUP_PACKS.find((x) => x.key === "essentials")!;
+  const ids = Object.fromEntries(p.channels.map((x, i) => [x.key, String(100000000000000000n + BigInt(i))]));
+  const after = setupRecommendations(merge(c, p.config(ids, c)));
+  assert.ok(!after.some((r) => ["logs", "logging", "automod", "security"].includes(r.key)));
+});

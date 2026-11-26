@@ -7,6 +7,8 @@ export * from "./events.js";
 export * from "./template.js";
 export * from "./commands.js";
 export * from "./automation/schema.js";
+export * from "./automation/recipes.js";
+export * from "./setup/packs.js";
 export * from "./ai/index.js";
 export * from "./architect/index.js";
 export * from "./health.js";

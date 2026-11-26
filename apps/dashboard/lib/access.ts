@@ -64,6 +64,8 @@ export function invalidateAccess(guildId: string) {
 /** Section → minimum level. Drives navigation and API checks. */
 export const SECTIONS = [
   { key: "overview", label: "Overview", level: "viewer" },
+  { key: "setup", label: "Quick Setup", level: "admin" },
+  { key: "tools", label: "Server Tools", level: "admin" },
   { key: "architect", label: "Architect", level: "admin" },
   { key: "moderation", label: "Moderation", level: "moderator" },
   { key: "security", label: "Security", level: "moderator" },

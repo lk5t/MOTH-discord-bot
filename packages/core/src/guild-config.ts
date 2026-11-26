@@ -218,6 +218,100 @@ export const guildConfigSchema = z.object({
     supportAutoReply: z.boolean().default(false),
   }).prefault({}),
 
+  /** Server event logs (message edits/deletes, members, roles, channels, voice, invites). */
+  logging: z.object({
+    enabled: z.boolean().default(false),
+    /** Falls back to general.logChannelId when a per-category channel is not set. */
+    messageChannelId: optId,
+    memberChannelId: optId,
+    serverChannelId: optId,
+    voiceChannelId: optId,
+    events: z.object({
+      messageDelete: z.boolean().default(true),
+      messageEdit: z.boolean().default(true),
+      bulkDelete: z.boolean().default(true),
+      memberJoin: z.boolean().default(true),
+      memberLeave: z.boolean().default(true),
+      memberRoles: z.boolean().default(true),
+      nickname: z.boolean().default(true),
+      channels: z.boolean().default(true),
+      roles: z.boolean().default(true),
+      voice: z.boolean().default(false),
+      invites: z.boolean().default(true),
+      bans: z.boolean().default(true),
+    }).prefault({}),
+    /** Track which invite each member used to join. */
+    inviteTracking: z.boolean().default(true),
+    ignoredChannelIds: ids,
+    ignoreBots: z.boolean().default(true),
+  }).prefault({}),
+
+  /** Join-to-create voice channels. */
+  tempVoice: z.object({
+    enabled: z.boolean().default(false),
+    hubChannelIds: ids,
+    /** Category for created channels; defaults to the hub's category. */
+    categoryId: optId,
+    nameTemplate: z.string().max(100).default("{user}'s room"),
+    defaultLimit: z.number().int().min(0).max(99).default(0),
+    /** Post a control panel (lock, hide, rename, limit, claim) in the channel's chat. */
+    controlPanel: z.boolean().default(true),
+  }).prefault({}),
+
+  suggestions: z.object({
+    enabled: z.boolean().default(false),
+    channelId: optId,
+    /** Messages typed in the suggestion channel are turned into suggestions automatically. */
+    convertMessages: z.boolean().default(true),
+    autoThread: z.boolean().default(true),
+    anonymous: z.boolean().default(false),
+    staffRoleIds: ids,
+    /** Where approved/denied suggestions are reposted (optional). */
+    reviewedChannelId: optId,
+    dmAuthor: z.boolean().default(true),
+  }).prefault({}),
+
+  starboard: z.object({
+    enabled: z.boolean().default(false),
+    channelId: optId,
+    emoji: z.string().default("⭐"),
+    threshold: z.number().int().min(1).max(100).default(3),
+    ignoredChannelIds: ids,
+    allowSelfStar: z.boolean().default(false),
+  }).prefault({}),
+
+  /** Per-channel behaviour rules. */
+  channelRules: z.array(z.object({
+    channelId: snowflake,
+    /** Delete messages without an attachment or link. */
+    mediaOnly: z.boolean().default(false),
+    /** Create a thread on every new message. */
+    autoThread: z.boolean().default(false),
+    threadName: z.string().max(100).default("{user.name}'s thread"),
+    /** Publish messages in announcement channels automatically. */
+    autoPublish: z.boolean().default(false),
+    autoReact: z.array(z.string()).max(5).default([]),
+    /** Delete messages after N seconds (0 = keep). */
+    deleteAfterSeconds: z.number().int().min(0).max(86_400).default(0),
+    /** Only one message per member per N minutes (0 = off). */
+    oneMessagePerMinutes: z.number().int().min(0).max(10_080).default(0),
+  })).max(50).default([]),
+
+  /** Messages that stay at the bottom of a channel. */
+  sticky: z.array(z.object({
+    channelId: snowflake,
+    message: messageTemplateSchema,
+    /** Re-post after this many new messages. */
+    every: z.number().int().min(1).max(50).default(4),
+  })).max(25).default([]),
+
+  /** Voice/text channels whose names show live server stats. */
+  statsChannels: z.array(z.object({
+    channelId: snowflake,
+    /** Placeholders: {members} {humans} {bots} {boosts} {online} {channels} {roles} */
+    template: z.string().max(100),
+  })).max(10).default([]),
+
   backups: z.object({
     autoDaily: z.boolean().default(true),
     keep: z.number().int().min(1).max(100).default(14),

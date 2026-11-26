@@ -11,10 +11,13 @@ import { roleMenuComponents } from "../modules/roleMenus.js";
 import { giveawayComponents } from "../modules/giveaways.js";
 import { pollComponents } from "../modules/polls.js";
 import { appealReviewComponents } from "../modules/appeals.js";
+import { toolCommands, setupComponents } from "./tools.js";
+import { suggestionComponents } from "../modules/suggestions.js";
+import { tempVoiceComponents } from "../modules/tempVoice.js";
 
-export const commands: SlashCommand[] = [...moderationCommands, ...ticketCommands, ...architectCommands, ...aiCommands, ...communityCommands, ...adminCommands];
+export const commands: SlashCommand[] = [...moderationCommands, ...ticketCommands, ...architectCommands, ...aiCommands, ...communityCommands, ...adminCommands, ...toolCommands];
 export const commandMap = new Map(commands.map((c) => [c.data.name, c]));
 export const BUILTIN_NAMES = new Set(commands.map((c) => c.data.name));
 
-export const components: ComponentHandler[] = [ticketComponents, architectComponents, verifyComponents, roleMenuComponents, giveawayComponents, pollComponents, appealReviewComponents, backupComponents];
+export const components: ComponentHandler[] = [ticketComponents, architectComponents, verifyComponents, roleMenuComponents, giveawayComponents, pollComponents, appealReviewComponents, backupComponents, setupComponents, suggestionComponents, tempVoiceComponents];
 export const componentMap = new Map(components.map((c) => [c.prefix, c]));

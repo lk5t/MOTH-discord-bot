@@ -1,6 +1,8 @@
 "use client";
 import Link from "next/link";
-import { useGuild } from "@/components/guild";
+import { useMemo } from "react";
+import { setupRecommendations } from "@moth/core/shared";
+import { useGuild, useGuildConfig } from "@/components/guild";
 import { fmtNum, timeAgo, useApi, useLive } from "@/components/hooks";
 import { Card, Chip, Empty, PageHead, Skeleton, Stat } from "@/components/ui";
 import { LineChart } from "@/components/charts";
@@ -22,11 +24,16 @@ export function OverviewView() {
   useLive(guildId, ["analytics.tick", "member.joined", "member.left", "case.created", "security.event", "ticket.updated"], () => void q.reload());
   const d = q.data;
   const hourly = d?.hourly ?? [];
+  const cfg = useGuildConfig();
+  const recs = useMemo(() => (cfg.config && can("admin") ? setupRecommendations(cfg.config).filter((r) => r.severity !== "low") : []), [cfg.config, can]);
   return (
     <>
       <PageHead title={d?.live?.name ?? "Overview"} description="Live server statistics and recent activity." actions={can("admin") && <Link className="btn primary" href={`/dashboard/${guildId}/architect`}><I.sparkles /> Open Architect</Link>} />
       {(d?.state?.raidMode || d?.state?.lockdown) && <Card accent className="mb"><div className="row"><I.alert style={{ color: "var(--crimson)", width: 20 }} /><b>{d.state.raidMode ? "Raid mode is active" : "Server is in lockdown"}</b><span className="muted">— go to Security to review or lift it.</span></div></Card>}
       {d?.live && !d.live.botPermissions.administrator && !(d.live.botPermissions.manageRoles && d.live.botPermissions.manageChannels) && <Card className="mb"><div className="row"><Chip tone="warn">Permissions</Chip><span className="muted">MOTH is missing Manage Roles / Manage Channels. Architect, tickets and lockdown need them.</span></div></Card>}
+      {recs.length > 0 && <Card className="mb" title="Finish setting up" subtitle={`${recs.length} important thing(s) are missing`} actions={<Link className="btn primary sm" href={`/dashboard/${guildId}/setup`}><I.setup /> Fix in one click</Link>}>
+        <div className="row wrap">{recs.map((r) => <Chip key={r.key} tone={r.severity === "high" ? "crim" : "warn"}>{r.title}</Chip>)}</div>
+      </Card>}
       {!d ? <div className="grid g4">{Array.from({ length: 4 }, (_, i) => <Skeleton key={i} h={110} />)}</div> : (
         <div className="grid g4">
           <Stat label="Members" value={fmtNum(d.live?.memberCount)} delta={<><span style={{ color: "var(--ok)" }}>+{fmtNum(d.week.joins)}</span> / <span style={{ color: "#ff6b85" }}>−{fmtNum(d.week.leaves)}</span> this week</>} icon={<I.members width={18} />} />

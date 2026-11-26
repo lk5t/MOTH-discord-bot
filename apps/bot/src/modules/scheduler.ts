@@ -8,6 +8,8 @@ import { recoverExpiredRaids } from "./security.js";
 import { executeModAction, expireTimeoutCases } from "./moderation.js";
 import { autoCloseInactive } from "./tickets.js";
 import { createBackup, pruneBackups } from "./backups.js";
+import { resumeAutomation } from "./automation.js";
+import { updateStatsChannels } from "./channelTools.js";
 
 /** Durable job runner (jobs live in Postgres, so they survive restarts) + periodic maintenance. */
 async function runDueJobs() {
@@ -25,6 +27,11 @@ async function runDueJobs() {
         const ch = await guild.channels.fetch(p.channelId).catch(() => null);
         await ch?.delete("Ticket closed").catch(() => undefined);
         await db.update(tickets).set({ status: "archived", channelId: null }).where(eq(tickets.id, p.ticketId));
+      } else if (job.kind === "automation-resume") {
+        // Mark done first: a resumed run must never execute twice.
+        await db.update(scheduledJobs).set({ done: true }).where(eq(scheduledJobs.id, job.id));
+        void resumeAutomation(guild, job.payload as never).catch((err) => log.warn({ err, job: job.id }, "automation resume failed"));
+        continue;
       }
       await db.update(scheduledJobs).set({ done: true }).where(eq(scheduledJobs.id, job.id));
     } catch (err) {
@@ -40,6 +47,7 @@ export function startScheduler(): void {
     new Cron("*/15 * * * * *", { protect: true }, safe("jobs", runDueJobs)),
     new Cron("*/20 * * * * *", { protect: true }, safe("giveaways+polls", async () => { await endDueGiveaways(); await endDuePolls(); })),
     new Cron("*/30 * * * * *", { protect: true }, safe("raid-recovery", async () => runtime.client && recoverExpiredRaids(runtime.client.guilds.cache))),
+    new Cron("*/10 * * * *", { protect: true }, safe("stats-channels", () => updateStatsChannels())),
     new Cron("*/5 * * * *", { protect: true }, safe("maintenance", async () => {
       await expireTimeoutCases();
       await getDb().delete(dashboardSessions).where(lte(dashboardSessions.expiresAt, new Date()));
