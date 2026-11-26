@@ -292,7 +292,8 @@ CUR_AI="$(get_env AI_PROVIDER)"
 if [[ -z "$AI_MODE" ]]; then
   if [[ -n "${AI_API_KEY:-}" && -n "${AI_PROVIDER:-}" && "${AI_PROVIDER:-}" != none ]]; then AI_MODE=key
   elif [[ $UPGRADE == 1 && -n "$CUR_AI" && "$CUR_AI" != none ]]; then AI_MODE=keep
-  elif [[ "$RAM_MB" -ge 3000 ]]; then AI_MODE=local   # zero-config default: free local AI, no key
+  elif [[ "$(get_env MOTH_AI_DISABLED)" == 1 ]]; then AI_MODE=none   # you turned AI off with `moth ai off`
+  elif [[ "$RAM_MB" -ge 6000 && "$(nproc 2>/dev/null || echo 1)" -ge 4 ]]; then AI_MODE=local   # free local AI only where it won't slow the server down
   else AI_MODE=none; fi
 fi
 
@@ -336,7 +337,8 @@ case "$AI_MODE" in
       ok "Upgrading local AI: ${OLD_LOCAL_MODEL} → $(get_env AI_MODEL)"
     else ok "Keeping existing AI provider ($CUR_AI · $(get_env AI_MODEL))"; fi ;;
   *) [[ -z "$CUR_AI" ]] && set_env AI_PROVIDER none
-     if [[ "$RAM_MB" -lt 3000 ]]; then ok "This server has ${RAM_MB} MB RAM — too little for local AI, so MOTH uses its built-in designer (no key needed)"
+     if [[ "$(get_env MOTH_AI_DISABLED)" == 1 ]]; then ok "AI is off (turn on: moth ai local)"
+     elif [[ "$RAM_MB" -lt 6000 || "$(nproc 2>/dev/null || echo 1)" -lt 4 ]]; then ok "Local AI skipped to keep this server fast (${RAM_MB} MB RAM, $(nproc 2>/dev/null || echo ?) CPUs) — MOTH uses its built-in designer. Enable anyway: moth ai local"
      else ok "AI skipped — MOTH uses its built-in designer"; fi ;;
 esac
 

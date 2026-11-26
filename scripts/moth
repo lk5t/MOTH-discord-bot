@@ -18,6 +18,14 @@ env_set() { # idempotent KEY=VALUE update of .env
   else printf '%s=%s\n' "$1" "$2" >>.env; fi
   rm -f -- "$tmp"
 }
+stop_local_ai() { # stops and removes the Ollama container (profile services aren't removed by `up --remove-orphans`)
+  docker compose --profile local-ai stop ollama >/dev/null 2>&1 || true
+  docker compose --profile local-ai rm -f ollama >/dev/null 2>&1 || true
+  if docker volume inspect moth_ollama-data >/dev/null 2>&1; then
+    local a="y"; [[ -t 0 || -r /dev/tty ]] && read -r -p "Delete the downloaded AI model files to free disk space? [Y/n] " a </dev/tty 2>/dev/null || true
+    [[ "${a:-y}" =~ ^[Yy] ]] && docker volume rm moth_ollama-data >/dev/null 2>&1 && echo "Freed the disk space used by AI models."
+  fi
+}
 set_profile() { # set_profile NAME on|off — maintains COMPOSE_PROFILES
   local cur new p; cur="$(env_get COMPOSE_PROFILES)"; new=""
   for p in ${cur//,/ }; do [[ "$p" == "$1" ]] || new="${new:+$new,}$p"; done
@@ -166,8 +174,8 @@ case "$cmd" in
         [[ "$code" == 200 ]] && echo "${G}✓${Z} Key accepted" || echo "${Y}!${Z} Couldn't verify the key (HTTP $code); saving anyway."
         read -r -p "Model [$model]: " m </dev/tty; model="${m:-$model}"
         if [[ "$prov" == openrouter ]]; then env_set AI_PROVIDER openai-compatible; env_set AI_BASE_URL https://openrouter.ai/api/v1; else env_set AI_PROVIDER "$prov"; env_set AI_BASE_URL ""; fi
-        env_set AI_API_KEY "$key"; env_set AI_MODEL "$model"; env_set AI_TIMEOUT_MS ""; env_set MOTH_LOCAL_AI ""
-        set_profile local-ai off
+        env_set AI_API_KEY "$key"; env_set AI_MODEL "$model"; env_set AI_TIMEOUT_MS ""; env_set MOTH_LOCAL_AI ""; env_set MOTH_AI_DISABLED ""
+        set_profile local-ai off; stop_local_ai
         dc up -d --remove-orphans >/dev/null && dc up -d --force-recreate bot dashboard
         echo "${G}✓${Z} AI enabled: $prov · $model" ;;
       local)
@@ -179,7 +187,7 @@ case "$cmd" in
         # An explicitly chosen model is kept across updates; the automatic choice may be improved by updates.
         if [[ -n "${1:-}" ]]; then env_set MOTH_LOCAL_MODEL_PINNED 1; else env_set MOTH_LOCAL_MODEL_PINNED ""; fi
         [[ $ram -lt 3800 ]] && echo "${Y}!${Z} ${ram} MB RAM: local AI will be slow and basic. An API key gives far better results."
-        env_set AI_PROVIDER ollama; env_set AI_MODEL "$model"; env_set AI_BASE_URL http://ollama:11434/v1; env_set AI_API_KEY ""; env_set AI_TIMEOUT_MS 600000; env_set MOTH_LOCAL_AI 1
+        env_set MOTH_AI_DISABLED ""; env_set AI_PROVIDER ollama; env_set AI_MODEL "$model"; env_set AI_BASE_URL http://ollama:11434/v1; env_set AI_API_KEY ""; env_set AI_TIMEOUT_MS 600000; env_set MOTH_LOCAL_AI 1
         set_profile local-ai on
         dc up -d ollama
         for _ in $(seq 1 30); do dc exec -T ollama ollama list >/dev/null 2>&1 && break; sleep 2; done
@@ -191,10 +199,11 @@ case "$cmd" in
         echo "${G}✓${Z} Free local AI enabled: $model (no API key needed)" ;;
       off)
         need_root ai
-        env_set AI_PROVIDER none; env_set AI_API_KEY ""; env_set MOTH_LOCAL_AI ""
-        set_profile local-ai off
+        env_set AI_PROVIDER none; env_set AI_API_KEY ""; env_set MOTH_LOCAL_AI ""; env_set MOTH_AI_DISABLED 1
+        set_profile local-ai off; stop_local_ai
         dc up -d --remove-orphans >/dev/null && dc up -d --force-recreate bot dashboard
-        echo "AI disabled. The Architect keeps working with its built-in designer." ;;
+        echo "${G}✓${Z} AI turned off — its memory and CPU are freed. Everything else, including the Architect's built-in designer, keeps working."
+        echo "  Turn it back on any time: sudo moth ai local" ;;
       *) die "Usage: moth ai [status|key|local [model]|off]" ;;
     esac ;;
   uninstall)
