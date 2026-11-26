@@ -189,6 +189,7 @@ case "$cmd" in
         [[ $ram -lt 3800 ]] && echo "${Y}!${Z} ${ram} MB RAM: local AI will be slow and basic. An API key gives far better results."
         env_set MOTH_AI_DISABLED ""; env_set AI_PROVIDER ollama; env_set AI_MODEL "$model"; env_set AI_BASE_URL http://ollama:11434/v1; env_set AI_API_KEY ""; env_set AI_TIMEOUT_MS 600000; env_set MOTH_LOCAL_AI 1
         set_profile local-ai on
+        cores=$(nproc 2>/dev/null || echo 2); env_set OLLAMA_CPUS "$(( cores > 1 ? cores - 1 : 1 ))"
         dc up -d ollama
         for _ in $(seq 1 30); do dc exec -T ollama ollama list >/dev/null 2>&1 && break; sleep 2; done
         echo "Downloading ${model} (one-time)…"

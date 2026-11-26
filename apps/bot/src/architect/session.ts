@@ -120,7 +120,7 @@ export async function architectTurn(guild: Guild, session: Session, userMessage:
   const useAI = !!ai && !local;
   if (ai && local && mode !== "improve" && !/^template:/.test(userMessage)) {
     // Hard time budget: if the CPU model is slow, use the instant built-in designer instead.
-    const budgetMs = Number(process.env.ARCHITECT_AI_BUDGET_MS) || 20_000;
+    const budgetMs = Number(process.env.ARCHITECT_AI_BUDGET_MS) || 30_000; // includes loading an idle model
     const signal = AbortSignal.timeout(budgetMs);
     const started = Date.now();
     try {

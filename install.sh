@@ -360,6 +360,7 @@ else
   [[ -z "$CUR_URL" || "$CUR_URL" == "http://localhost:3000" ]] && set_env DASHBOARD_URL "http://${PUBLIC_IP}:${PORT}"
 fi
 DASH_URL="$(get_env DASHBOARD_URL)"
+CORES=$(nproc 2>/dev/null || echo 2); set_env OLLAMA_CPUS "$(( CORES > 1 ? CORES - 1 : 1 ))"
 PROFILES=""; [[ -n "$DOMAIN" ]] && PROFILES="https"
 [[ "$(get_env MOTH_LOCAL_AI)" == 1 ]] && PROFILES="${PROFILES:+$PROFILES,}local-ai"
 set_env COMPOSE_PROFILES "$PROFILES"

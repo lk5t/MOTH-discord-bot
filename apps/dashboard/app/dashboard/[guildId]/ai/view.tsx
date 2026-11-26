@@ -54,7 +54,7 @@ export function AiView() {
       </div>
       {!c ? <Skeleton h={300} /> : <div className="grid g2 mt">
         <Card title="Assistant">
-          <ToggleRow title="AI assistant enabled" description="/ask, /summarize, mentions and AI chat channels." checked={c.ai.enabled} onChange={(v) => cfg.update("ai", { enabled: v })} />
+          <ToggleRow title="Let members use the AI" description="/ask, /summarize, @mentions and AI chat channels. Off by default to save server resources — the Architect uses AI either way." checked={c.ai.enabled} onChange={(v) => cfg.update("ai", { enabled: v })} />
           <ToggleRow title="Respond when mentioned" checked={c.ai.respondToMentions} onChange={(v) => cfg.update("ai", { respondToMentions: v })} />
           <div className="stack mt"><Field label="AI chat channels" hint="MOTH replies to every message here"><ChannelMulti value={c.ai.chatChannelIds} onChange={(v) => cfg.update("ai", { chatChannelIds: v })} /></Field>
             <Field label="Restrict to roles" hint="Empty = everyone"><RoleMulti value={c.ai.allowedRoleIds} onChange={(v) => cfg.update("ai", { allowedRoleIds: v })} /></Field>

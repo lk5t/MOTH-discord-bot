@@ -202,7 +202,8 @@ export const guildConfigSchema = z.object({
   }).prefault({}),
 
   ai: z.object({
-    enabled: z.boolean().default(true),
+    /** Member-facing AI (/ask, @mentions, chat channels). The Architect works regardless. */
+    enabled: z.boolean().default(false),
     providerId: z.string().nullable().default(null),
     personality: z.object({
       name: z.string().default("MOTH"),

@@ -66,8 +66,11 @@ services:
     restart: unless-stopped
     environment:
       OLLAMA_CONTEXT_LENGTH: "8192"   # room for the Architect's server description + blueprint
-      OLLAMA_KEEP_ALIVE: "24h"        # keep the model in memory so requests start instantly
+      OLLAMA_KEEP_ALIVE: "${OLLAMA_KEEP_ALIVE:-10m}"   # unload the model when idle so it doesn't hold RAM
       OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    # Leave CPU free for the bot and dashboard while the AI is thinking (set by the installer: cores − 1).
+    cpus: ${OLLAMA_CPUS:-1}
     volumes:
       - ollama-data:/root/.ollama
     healthcheck:
