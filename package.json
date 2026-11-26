@@ -1,0 +1,24 @@
+{
+  "name": "moth",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MOTH — self-hosted AI-powered Discord bot and server management platform",
+  "license": "UNLICENSED",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "build": "npm run build -w @moth/core && npm run build -w @moth/bot && npm run build -w @moth/dashboard",
+    "build:core": "npm run build -w @moth/core",
+    "typecheck": "npm run build -w @moth/core && npm run typecheck -w @moth/bot && npm run typecheck -w @moth/dashboard",
+    "test": "npm run build -w @moth/core && npm test -w @moth/core",
+    "db:generate": "npm run db:generate -w @moth/core",
+    "db:migrate": "npm run db:migrate -w @moth/core",
+    "dev:bot": "npm run dev -w @moth/bot",
+    "dev:dashboard": "npm run dev -w @moth/dashboard"
+  }
+}

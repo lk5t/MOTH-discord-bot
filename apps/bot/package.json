@@ -1,0 +1,25 @@
+{
+  "name": "@moth/bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@moth/core": "1.0.0",
+    "croner": "^11.0.1",
+    "discord.js": "^14.28.1",
+    "drizzle-orm": "^0.45.4",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.7",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}

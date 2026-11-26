@@ -1,0 +1,82 @@
+# MOTH — production stack. Managed by the `moth` CLI (see install.sh).
+name: moth
+
+x-app: &app
+  env_file: .env
+  restart: unless-stopped
+  environment:
+    DATABASE_URL: postgres://${POSTGRES_USER:-moth}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-moth}
+    BOT_INTERNAL_URL: http://bot:4100
+    MOTH_VERSION: ${MOTH_VERSION:-latest}
+  logging:
+    driver: json-file
+    options: { max-size: "20m", max-file: "5" }
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-moth}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-moth}
+    volumes:
+      - moth-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    shm_size: 256mb
+
+  # One-shot: applies database migrations before the app services start.
+  migrate:
+    <<: *app
+    image: ${MOTH_IMAGE_PREFIX:-ghcr.io/lk5t/moth}-bot:${MOTH_VERSION:-latest}
+    build: { context: ., target: bot }
+    command: ["node", "packages/core/dist/db/migrate-cli.js"]
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  bot:
+    <<: *app
+    image: ${MOTH_IMAGE_PREFIX:-ghcr.io/lk5t/moth}-bot:${MOTH_VERSION:-latest}
+    build: { context: ., target: bot }
+    depends_on:
+      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # reach a local AI server (e.g. Ollama) on the host
+
+  dashboard:
+    <<: *app
+    image: ${MOTH_IMAGE_PREFIX:-ghcr.io/lk5t/moth}-dashboard:${MOTH_VERSION:-latest}
+    build: { context: ., target: dashboard }
+    ports:
+      - "${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_PORT:-3000}:3000"
+    depends_on:
+      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+
+  # Automatic HTTPS reverse proxy — enabled with COMPOSE_PROFILES=https when a domain is configured.
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      MOTH_DOMAIN: ${MOTH_DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [dashboard]
+
+volumes:
+  moth-db:
+  caddy-data:
+  caddy-config:

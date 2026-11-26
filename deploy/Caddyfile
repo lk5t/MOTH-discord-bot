@@ -1,0 +1,13 @@
+{$MOTH_DOMAIN} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	# Server-Sent Events (live dashboard updates) must not be buffered.
+	@events path /api/guilds/*/events
+	reverse_proxy @events dashboard:3000 {
+		flush_interval -1
+	}
+	reverse_proxy dashboard:3000
+}

@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# moth — management CLI for a MOTH installation.
+set -Eeuo pipefail
+
+MOTH_DIR="${MOTH_DIR:-/opt/moth}"
+REPO="lk5t/MOTH-discord-bot"
+[[ -t 1 ]] && { R=$'\e[38;5;161m'; G=$'\e[32m'; Y=$'\e[33m'; B=$'\e[1m'; Z=$'\e[0m'; } || { R=; G=; Y=; B=; Z=; }
+
+die() { echo "${R}✗${Z} $*" >&2; exit 1; }
+need_root() { [[ $EUID -eq 0 ]] || die "This command needs root. Try: sudo moth $*"; }
+[[ -d "$MOTH_DIR" && -f "$MOTH_DIR/docker-compose.yml" ]] || die "MOTH is not installed in $MOTH_DIR (set MOTH_DIR to override)."
+cd "$MOTH_DIR"
+dc() { docker compose "$@"; }
+env_get() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+
+usage() {
+  cat <<EOF
+${R}moth${Z} — manage your MOTH installation (${MOTH_DIR})
+
+  ${B}status${Z}              Service status and health
+  ${B}logs${Z} [service] [-f] Show logs (bot, dashboard, postgres, migrate, caddy)
+  ${B}start${Z} | ${B}stop${Z} | ${B}restart${Z} [service]
+  ${B}update${Z} [version]    Upgrade to the latest (or a specific) release — config and data are kept
+  ${B}backup${Z}              Dump the database to ${MOTH_DIR}/backups
+  ${B}restore${Z} <file>      Restore a database dump (stops the bot during restore)
+  ${B}config${Z}              Edit ${MOTH_DIR}/.env, then restart
+  ${B}url${Z}                 Print the dashboard and bot invite URLs
+  ${B}doctor${Z}              Diagnose common problems
+  ${B}version${Z}             Installed version
+  ${B}uninstall${Z}           Remove MOTH (asks before deleting data)
+EOF
+}
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  status|ps)
+    dc ps --format "table {{.Service}}\t{{.State}}\t{{.Status}}"
+    echo
+    port="$(env_get DASHBOARD_PORT)"
+    if curl -fsS "http://127.0.0.1:${port:-3000}/api/health" >/dev/null 2>&1 || dc exec -T dashboard node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then echo "${G}●${Z} dashboard healthy"; else echo "${R}●${Z} dashboard unhealthy"; fi
+    bot="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$(dc ps -q bot | head -1)" 2>/dev/null || echo stopped)"
+    [[ "$bot" == healthy ]] && echo "${G}●${Z} bot connected to Discord" || echo "${Y}●${Z} bot: $bot"
+    ;;
+  logs) dc logs --tail=200 "$@" ;;
+  start) need_root "$cmd"; dc up -d --remove-orphans "$@" ;;
+  stop) need_root "$cmd"; dc stop "$@" ;;
+  restart) need_root "$cmd"; if [[ $# -gt 0 ]]; then dc restart "$@"; else dc up -d --remove-orphans && dc restart bot dashboard; fi ;;
+  update|upgrade)
+    need_root "$cmd"
+    echo "${B}Backing up the database first…${Z}"; "$0" backup
+    tmp="$(mktemp)"; curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/install.sh" -o "$tmp"
+    MOTH_DIR="$MOTH_DIR" bash "$tmp" --unattended ${1:+--version "$1"}; rm -f -- "$tmp"
+    docker image prune -f >/dev/null 2>&1 || true
+    ;;
+  backup)
+    need_root "$cmd"
+    mkdir -p backups
+    f="backups/moth-$(date +%Y%m%d-%H%M%S).sql.gz"
+    dc exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --clean --if-exists' | gzip -9 >"$f"
+    chmod 600 "$f"
+    # Keep the 20 most recent dumps.
+    ls -1t backups/moth-*.sql.gz 2>/dev/null | tail -n +21 | xargs -r rm -f --
+    echo "${G}✓${Z} Database backed up to ${MOTH_DIR}/$f ($(du -h "$f" | cut -f1))"
+    ;;
+  restore)
+    need_root "$cmd"
+    f="${1:-}"; [[ -f "$f" ]] || die "Usage: moth restore <backup.sql.gz>"
+    read -r -p "This replaces the current database with $f. Type RESTORE to continue: " c </dev/tty
+    [[ "$c" == "RESTORE" ]] || die "Cancelled."
+    "$0" backup
+    dc stop bot dashboard
+    if [[ "$f" == *.gz ]]; then gunzip -c "$f"; else cat "$f"; fi | dc exec -T postgres sh -c 'psql -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+    dc up -d
+    echo "${G}✓${Z} Restored from $f"
+    ;;
+  config) need_root "$cmd"; "${EDITOR:-nano}" .env && read -r -p "Restart MOTH to apply? [Y/n] " a </dev/tty && [[ "${a:-y}" =~ ^[Yy] ]] && dc up -d --force-recreate bot dashboard ;;
+  url)
+    echo "Dashboard:  $(env_get DASHBOARD_URL)"
+    echo "OAuth redirect (add in Discord portal): $(env_get DASHBOARD_URL)/api/auth/callback"
+    echo "Invite:     https://discord.com/oauth2/authorize?client_id=$(env_get DISCORD_CLIENT_ID)&permissions=8&scope=bot%20applications.commands"
+    ;;
+  version) echo "MOTH $(env_get MOTH_VERSION) · $(docker compose version --short 2>/dev/null | sed 's/^/compose /')" ;;
+  doctor)
+    ok() { echo "${G}✓${Z} $*"; }; bad() { echo "${R}✗${Z} $*"; }
+    docker info >/dev/null 2>&1 && ok "Docker daemon running" || bad "Docker daemon not running"
+    for k in DISCORD_TOKEN DISCORD_CLIENT_ID DISCORD_CLIENT_SECRET POSTGRES_PASSWORD MOTH_ENCRYPTION_KEY INTERNAL_API_SECRET DASHBOARD_URL; do [[ -n "$(env_get $k)" ]] && ok "$k set" || bad "$k missing in .env"; done
+    tok="$(env_get DISCORD_TOKEN)"
+    me=$(curl -fsS -H "Authorization: Bot $tok" https://discord.com/api/v10/users/@me 2>/dev/null || true)
+    [[ -n "$me" ]] && ok "Discord accepts the bot token" || bad "Discord rejected the bot token"
+    app=$(curl -fsS -H "Authorization: Bot $tok" https://discord.com/api/v10/applications/@me 2>/dev/null || true)
+    if [[ -n "$app" ]]; then
+      flags=$(printf '%s' "$app" | grep -o '"flags":[0-9]*' | head -1 | cut -d: -f2)
+      (( (${flags:-0} & (1<<15 | 1<<14)) )) && ok "Server Members intent enabled" || bad "Enable 'Server Members Intent' on the Bot tab"
+      (( (${flags:-0} & (1<<19 | 1<<18)) )) && ok "Message Content intent enabled" || bad "Enable 'Message Content Intent' on the Bot tab"
+    fi
+    dc ps --format '{{.Service}} {{.State}}' | while read -r s st; do [[ "$st" == running ]] && ok "$s running" || bad "$s $st"; done
+    df -Pk . | awk 'NR==2 { if ($4 < 1048576) print "'"${Y}"'!'"${Z}"' Less than 1 GB free disk space" }'
+    ;;
+  uninstall)
+    need_root "$cmd"
+    read -r -p "Stop and remove MOTH containers? [y/N] " a </dev/tty; [[ "$a" =~ ^[Yy] ]] || exit 0
+    read -r -p "Also DELETE the database and all data? Type DELETE to confirm, anything else keeps data: " d </dev/tty
+    if [[ "$d" == "DELETE" ]]; then dc down -v; else dc down; fi
+    if command -v systemctl >/dev/null 2>&1; then systemctl disable --now moth.service >/dev/null 2>&1 || true; rm -f /etc/systemd/system/moth.service; systemctl daemon-reload || true; fi
+    echo "Containers removed. Files remain in $MOTH_DIR (backups included); delete that directory manually if you no longer need it."
+    rm -f /usr/local/bin/moth
+    ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac

@@ -1,0 +1,31 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: moth, POSTGRES_PASSWORD: moth, POSTGRES_DB: moth }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U moth" --health-interval 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Build & unit tests
+        run: npm test
+      - name: Typecheck bot and dashboard
+        run: npm run typecheck
+      - name: Migrations apply cleanly
+        run: npm run db:migrate
+        env: { DATABASE_URL: "postgres://moth:moth@localhost:5432/moth" }
+      - name: Build dashboard
+        run: npm run build -w @moth/bot && npm run build -w @moth/dashboard
+      - name: Shellcheck installer & CLI
+        run: shellcheck -S warning install.sh scripts/moth
