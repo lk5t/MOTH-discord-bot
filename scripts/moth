@@ -57,7 +57,7 @@ EOF
 cmd="${1:-help}"; shift || true
 # Updates replace this script on disk — run them from a private copy.
 if [[ "$cmd" =~ ^(update|upgrade)$ && -z "${MOTH_SELF_COPY:-}" ]]; then
-  self="$(mktemp)"; cp "$0" "$self"; MOTH_SELF_COPY="$self" MOTH_DIR="$MOTH_DIR" exec bash "$self" "$cmd" "$@"
+  self="$(mktemp)"; cp "$0" "$self"; chmod 755 "$self"; MOTH_SELF_COPY="$self" MOTH_DIR="$MOTH_DIR" exec bash "$self" "$cmd" "$@"
 fi
 case "$cmd" in
   status|ps)
