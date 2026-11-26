@@ -6,6 +6,8 @@ const TYPE_MAP: Partial<Record<ChannelType, SnapshotChannelType>> = {
   [ChannelType.GuildAnnouncement]: "announcement", [ChannelType.GuildForum]: "forum", [ChannelType.GuildStageVoice]: "stage",
 };
 
+const memberFetchAt = new Map<string, number>();
+
 export function channelKind(c: GuildBasedChannel): SnapshotChannelType {
   return TYPE_MAP[c.type] ?? "other";
 }
@@ -15,7 +17,12 @@ export async function captureSnapshot(guild: Guild, activity?: Map<string, numbe
   await Promise.all([guild.roles.fetch(), guild.channels.fetch()]);
   const me = guild.members.me ?? (await guild.members.fetchMe());
   // Other bots (needs the Server Members intent; on very large servers fall back to the cache).
-  const members = guild.memberCount <= 25_000 ? await guild.members.fetch().catch(() => guild.members.cache) : guild.members.cache;
+  // A full member fetch is slow on big servers — do it at most every 10 minutes (join events keep the cache fresh).
+  if (guild.memberCount <= 25_000 && Date.now() - (memberFetchAt.get(guild.id) ?? 0) > 600_000) {
+    await guild.members.fetch().catch(() => undefined);
+    memberFetchAt.set(guild.id, Date.now());
+  }
+  const members = guild.members.cache;
   const bots = [...members.values()].filter((m) => m.user.bot && m.id !== me.id).map((m) => ({ id: m.id, name: m.user.username, kickable: m.kickable }));
   return {
     id: guild.id, name: guild.name, iconUrl: guild.iconURL(), ownerId: guild.ownerId, memberCount: guild.memberCount,

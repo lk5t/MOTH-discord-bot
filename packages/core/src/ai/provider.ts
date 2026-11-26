@@ -28,6 +28,8 @@ export interface CompletionOptions {
   /** Ask the model for a single JSON object (uses native JSON mode when available). */
   json?: boolean;
   signal?: AbortSignal;
+  /** completeJson: how many generation attempts (default 2 = one repair round). */
+  attempts?: number;
 }
 
 export interface CompletionResult {
@@ -84,7 +86,7 @@ export class AIClient {
         return this.config.kind === "anthropic" ? await this.anthropic(messages, opts) : await this.openai(messages, opts);
       } catch (err) {
         lastErr = err;
-        if (!(err instanceof AIError) || !err.retryable) throw err;
+        if (!(err instanceof AIError) || !err.retryable || opts.signal?.aborted) throw err;
         if (this.config.kind === "ollama" && /timed out/.test(err.message)) throw err;
         await new Promise((r) => setTimeout(r, 800 * 2 ** attempt));
       }
@@ -144,7 +146,7 @@ export class AIClient {
   async completeJson<T extends z.ZodTypeAny>(messages: ChatMessage[], schema: T, opts: CompletionOptions = {}): Promise<{ data: z.infer<T>; usage: CompletionResult }> {
     const convo = [...messages];
     let last: CompletionResult | null = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < (opts.attempts ?? 2); attempt++) {
       last = await this.complete(convo, { ...opts, json: true });
       const parsed = extractJson(last.text);
       const result = parsed === undefined ? null : schema.safeParse(parsed);

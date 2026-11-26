@@ -57,6 +57,15 @@ client.once(Events.ClientReady, async (c) => {
   startScheduler();
   runtime.ready = true;
   log.info("MOTH is ready");
+  // Warm up a local AI model so the first Architect/AI request doesn't wait for it to load.
+  if (process.env.AI_PROVIDER === "ollama") {
+    void (async () => {
+      const { resolveAIClient } = await import("@moth/core");
+      const ai = await resolveAIClient(null);
+      const t = Date.now();
+      await ai?.complete([{ role: "user", content: "Say OK." }], { maxTokens: 2 }).then(() => log.info({ ms: Date.now() - t, model: ai.config.model }, "local AI model loaded")).catch((err) => log.warn({ err: (err as Error).message }, "local AI warm-up failed (it may still be downloading)"));
+    })();
+  }
 });
 
 client.on(Events.GuildCreate, async (g) => { await register(g); await syncGuildCommands(g); await startScheduledAutomations([g.id]); log.info({ guild: g.id, name: g.name }, "joined guild"); });

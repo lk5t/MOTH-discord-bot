@@ -55,8 +55,8 @@ const DESIGN_BRIEF_PROMPT = `You plan Discord servers. Read the request and repl
 Only include features and sections the request asks for or clearly implies.`;
 
 /** Asks the model for a design brief and builds a full blueprint from it. */
-export async function blueprintFromBrief(ai: AIClient, request: string, context = ""): Promise<{ blueprint: Blueprint; reply: string; usage: CompletionResult }> {
-  const { data: b, usage } = await ai.completeJson([{ role: "system", content: DESIGN_BRIEF_PROMPT }, { role: "user", content: `${context ? `${context}\n\n` : ""}Request: ${request}` }], designBriefSchema, { maxTokens: 700, temperature: 0.2 });
+export async function blueprintFromBrief(ai: AIClient, request: string, context = "", signal?: AbortSignal): Promise<{ blueprint: Blueprint; reply: string; usage: CompletionResult }> {
+  const { data: b, usage } = await ai.completeJson([{ role: "system", content: DESIGN_BRIEF_PROMPT }, { role: "user", content: `${context ? `${context}\n\n` : ""}Request: ${request}` }], designBriefSchema, { maxTokens: 450, temperature: 0.2, signal, attempts: 1 });
   const base = inferIntent(request);
   const intent: DesignIntent = {
     ...base,
@@ -108,8 +108,8 @@ const EDIT_BRIEF_PROMPT = `You edit a Discord server. Using the CURRENT SERVER b
 Use exact names from the current server for anything existing. Leave lists empty when not requested. Never remove things the user did not ask to remove.`;
 
 /** Asks the model for a structured edit and converts it to a partial blueprint. Feature words are returned for the heuristic editor. */
-export async function blueprintFromEditBrief(ai: AIClient, request: string, serverDescription: string, snap: GuildSnapshot): Promise<{ blueprint: BlueprintInput; featurePhrase: string; reply: string; usage: CompletionResult; empty: boolean }> {
-  const { data: b, usage } = await ai.completeJson([{ role: "system", content: EDIT_BRIEF_PROMPT }, { role: "user", content: `CURRENT SERVER:\n${serverDescription}\n\nRequest: ${request}` }], editBriefSchema, { maxTokens: 700, temperature: 0.1 });
+export async function blueprintFromEditBrief(ai: AIClient, request: string, serverDescription: string, snap: GuildSnapshot, signal?: AbortSignal): Promise<{ blueprint: BlueprintInput; featurePhrase: string; reply: string; usage: CompletionResult; empty: boolean }> {
+  const { data: b, usage } = await ai.completeJson([{ role: "system", content: EDIT_BRIEF_PROMPT }, { role: "user", content: `CURRENT SERVER:\n${serverDescription}\n\nRequest: ${request}` }], editBriefSchema, { maxTokens: 400, temperature: 0.1, signal, attempts: 1 });
   const existsCh = (n: string) => snap.channels.some((c) => normaliseName(c.name) === normaliseName(n));
   const existsRole = (n: string) => snap.roles.some((r) => normaliseName(r.name) === normaliseName(n));
   const slugify = textName;
@@ -154,4 +154,16 @@ export async function blueprintFromEditBrief(ai: AIClient, request: string, serv
   const featurePhrase = b.features.map((f) => phrases[f.toLowerCase().trim()]).filter(Boolean).join(", ");
   const empty = !bp.categories!.length && !bp.channels!.length && !bp.roles!.length && !Object.values(bp.removals!).some((l) => (l as string[]).length);
   return { blueprint: bp, featurePhrase, reply: b.reply?.trim() ?? "", usage, empty: empty && !featurePhrase };
+}
+
+/** Very compact server outline for small models: far fewer tokens than describeSnapshot. */
+export function compactOutline(s: GuildSnapshot): string {
+  const cats = s.channels.filter((c) => c.type === "category").sort((a, b) => a.position - b.position);
+  const kids = (id: string | null) => s.channels.filter((c) => c.type !== "category" && c.parentId === id).sort((a, b) => a.position - b.position).map((c) => c.name).slice(0, 15).join(", ");
+  const lines = [`Server "${s.name}".`];
+  const top = kids(null); if (top) lines.push(`No category: ${top}`);
+  for (const c of cats.slice(0, 20)) lines.push(`${c.name}: ${kids(c.id) || "(empty)"}`);
+  lines.push(`Roles: ${s.roles.filter((r) => !r.everyone && !r.managed).sort((a, b) => b.position - a.position).map((r) => r.name).slice(0, 25).join(", ")}`);
+  if (s.bots?.length) lines.push(`Bots: ${s.bots.map((b) => b.name).join(", ")}`);
+  return lines.join("\n");
 }

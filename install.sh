@@ -269,10 +269,11 @@ ok "Secrets generated and stored in $ENV_FILE (mode 600)"
 step "Setting up AI"
 # Picks a local model that fits in memory (CPU inference; bigger = smarter but slower).
 # Qwen 2.5 follows instructions and produces structured output well for its size.
+# Local AI runs on the CPU, so speed depends on cores: bigger models only on strong machines.
 default_local_model() {
-  local disk_gb; disk_gb=$(df -Pk "$MOTH_DIR" 2>/dev/null | awk 'NR==2 {print int($4/1048576)}'); disk_gb=${disk_gb:-0}
-  if [[ "$RAM_MB" -ge 15000 && "$disk_gb" -ge 20 ]]; then echo "qwen2.5:14b"
-  elif [[ "$RAM_MB" -ge 7500 && "$disk_gb" -ge 12 ]]; then echo "qwen2.5:7b"
+  local cores disk_gb; cores=$(nproc 2>/dev/null || echo 2)
+  disk_gb=$(df -Pk "$MOTH_DIR" 2>/dev/null | awk 'NR==2 {print int($4/1048576)}'); disk_gb=${disk_gb:-0}
+  if [[ "$cores" -ge 8 && "$RAM_MB" -ge 7500 && "$disk_gb" -ge 12 ]]; then echo "qwen2.5:7b"
   elif [[ "$RAM_MB" -ge 3800 ]]; then echo "qwen2.5:3b"
   else echo "qwen2.5:1.5b"; fi
 }
@@ -329,7 +330,8 @@ case "$AI_MODE" in
     ok "Free local AI with Ollama · model ${LOCAL_MODEL} (downloaded when MOTH starts)" ;;
   keep)
     # Upgrade earlier default local models to the current, smarter default.
-    if [[ "$(get_env MOTH_LOCAL_AI)" == 1 ]] && [[ "$(get_env AI_MODEL)" =~ ^llama3\.(2:1b|2:3b|1:8b)$ ]]; then
+    # Move automatically-chosen local models to the current default (unless you picked one with `moth ai local <model>`).
+    if [[ "$(get_env MOTH_LOCAL_AI)" == 1 && "$(get_env MOTH_LOCAL_MODEL_PINNED)" != 1 ]] && [[ "$(get_env AI_MODEL)" =~ ^(llama3\.(2:1b|2:3b|1:8b)|qwen2\.5:[0-9.]+b)$ ]] && [[ "$(get_env AI_MODEL)" != "$(default_local_model)" ]]; then
       OLD_LOCAL_MODEL="$(get_env AI_MODEL)"; set_env AI_MODEL "$(default_local_model)"
       ok "Upgrading local AI: ${OLD_LOCAL_MODEL} → $(get_env AI_MODEL)"
     else ok "Keeping existing AI provider ($CUR_AI · $(get_env AI_MODEL))"; fi ;;

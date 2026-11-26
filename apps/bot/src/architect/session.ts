@@ -1,7 +1,7 @@
 import type { Guild } from "discord.js";
 import { and, desc, eq, gte, sql } from "drizzle-orm";
 import {
-  analyzeServer, architectSessions, blueprintFromBrief, blueprintFromEditBrief, architectSystemPrompt, architectTurnSchema, blueprintSchema, buildPlan, builtinTemplate, channelActivity, configBackups,
+  analyzeServer, architectSessions, blueprintFromBrief, blueprintFromEditBrief, compactOutline, architectSystemPrompt, architectTurnSchema, blueprintSchema, buildPlan, builtinTemplate, channelActivity, configBackups,
   describeSnapshot, designFromPrompt, getDb, getGuildConfig, improveTurnSchema, inferIntent, composeBlueprint, logChange, looksFresh, publishEvent,
   recordAIUsage, resolveAIClient, normaliseName,
   type ArchitectMode, type ArchitectPlan, type Blueprint, type BlueprintInput, type ChatMessage, type GuildSnapshot, type ServerAnalysis,
@@ -119,16 +119,20 @@ export async function architectTurn(guild: Guild, session: Session, userMessage:
   const local = ai?.config.kind === "ollama";
   const useAI = !!ai && !local;
   if (ai && local && mode !== "improve" && !/^template:/.test(userMessage)) {
+    // Hard time budget: if the CPU model is slow, use the instant built-in designer instead.
+    const budgetMs = Number(process.env.ARCHITECT_AI_BUDGET_MS) || 20_000;
+    const signal = AbortSignal.timeout(budgetMs);
+    const started = Date.now();
     try {
       if (mode === "create" || mode === "redesign") {
         const allPrompts = [...history.filter((m) => m.role === "user").map((m) => m.content), userMessage].join(". ");
         const context = mode === "redesign" ? `This is a redesign of the existing server "${snap.name}". Its current channels: ${snap.channels.filter((c) => c.type !== "category").map((c) => c.name).slice(0, 60).join(", ")}.` : "";
-        const r = await blueprintFromBrief(ai, allPrompts, context);
+        const r = await blueprintFromBrief(ai, allPrompts, context, signal);
         blueprint = r.blueprint; reply = r.reply;
         if (mode === "redesign") { analysis = audit; reply += "\n\nExisting channels with matching names are kept and moved so their history is preserved. Everything else is listed for removal — you approve each removal."; }
         await recordAIUsage({ guildId: guild.id, userId: session.userId, feature: "architect", inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, providerKind: ai.config.kind });
       } else if (mode === "quick") {
-        const r = await blueprintFromEditBrief(ai, userMessage, describeSnapshot(snap, 120), snap);
+        const r = await blueprintFromEditBrief(ai, userMessage, compactOutline(snap), snap, signal);
         await recordAIUsage({ guildId: guild.id, userId: session.userId, feature: "architect", inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, providerKind: ai.config.kind });
         const h = heuristicQuickEdit([r.featurePhrase, userMessage].filter(Boolean).join(", "), snap);
         if (!r.empty || h) {
@@ -139,7 +143,7 @@ export async function architectTurn(guild: Guild, session: Session, userMessage:
         }
       }
     } catch (err) {
-      log.warn({ err }, "local AI brief failed — using the built-in designer");
+      log.warn({ err, ms: Date.now() - started }, "local AI brief failed or too slow — using the built-in designer");
       reply = "";
     }
   }

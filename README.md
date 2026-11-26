@@ -141,7 +141,7 @@ MOTH also takes daily configuration backups of each server's Discord structure a
 
 ## AI providers
 
-**No API key is needed.** On servers with 3 GB+ RAM, the installer automatically runs a free local AI model next to MOTH (Qwen 2.5 via Ollama) and picks the biggest size that fits: 3B, 7B (8 GB RAM) or 14B (16 GB RAM). On smaller servers MOTH uses its built-in designer and audit, which need no AI at all.
+**No API key is needed.** On servers with 3 GB+ RAM, the installer automatically runs a free local AI model next to MOTH (Qwen 2.5 via Ollama) and picks a size that stays fast on your CPU: 3B by default, or 7B on machines with 8+ CPU cores and 8 GB RAM. Want a different trade-off? `sudo moth ai local qwen2.5:1.5b` is faster and `sudo moth ai local qwen2.5:7b` is smarter. The Architect never waits more than 20 seconds for the AI; if the model is slower than that, it uses the instant built-in designer. On smaller servers MOTH uses its built-in designer and audit, which need no AI at all.
 
 With local AI, the Architect asks the model for a short design brief: it reads your request and works out the server type, topics, features, custom sections and what to add, rename or remove. MOTH's designer then builds the full layout from that brief. This is fast on a CPU and reliable even with small models. The model also handles `/ask`, chat, summaries and command or automation generation.
 

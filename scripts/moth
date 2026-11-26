@@ -39,6 +39,7 @@ ${R}moth${Z} — manage your MOTH installation (${MOTH_DIR})
   ${B}config${Z}              Edit ${MOTH_DIR}/.env, then restart
   ${B}url${Z}                 Print the dashboard and bot invite URLs
   ${B}ai${Z}                  Show AI status · ${B}ai key${Z} [openai|anthropic|openrouter] · ${B}ai local${Z} [model] · ${B}ai off${Z}
+                      Faster AI: ${B}moth ai local qwen2.5:1.5b${Z} · smarter (needs a strong CPU): ${B}moth ai local qwen2.5:7b${Z}
   ${B}doctor${Z}              Diagnose common problems
   ${B}version${Z}             Installed version
   ${B}uninstall${Z}           Remove MOTH (asks before deleting data)
@@ -172,8 +173,11 @@ case "$cmd" in
       local)
         need_root ai
         ram=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
-        def=qwen2.5:1.5b; [[ $ram -ge 3800 ]] && def=qwen2.5:3b; [[ $ram -ge 7500 ]] && def=qwen2.5:7b; [[ $ram -ge 15000 ]] && def=qwen2.5:14b
+        cores=$(nproc 2>/dev/null || echo 2)
+        def=qwen2.5:1.5b; [[ $ram -ge 3800 ]] && def=qwen2.5:3b; [[ $ram -ge 7500 && $cores -ge 8 ]] && def=qwen2.5:7b
         model="${1:-$def}"
+        # An explicitly chosen model is kept across updates; the automatic choice may be improved by updates.
+        if [[ -n "${1:-}" ]]; then env_set MOTH_LOCAL_MODEL_PINNED 1; else env_set MOTH_LOCAL_MODEL_PINNED ""; fi
         [[ $ram -lt 3800 ]] && echo "${Y}!${Z} ${ram} MB RAM: local AI will be slow and basic. An API key gives far better results."
         env_set AI_PROVIDER ollama; env_set AI_MODEL "$model"; env_set AI_BASE_URL http://ollama:11434/v1; env_set AI_API_KEY ""; env_set AI_TIMEOUT_MS 600000; env_set MOTH_LOCAL_AI 1
         set_profile local-ai on
