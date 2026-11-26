@@ -86,7 +86,7 @@ case "$cmd" in
       if [[ "$latest" == "$(env_get MOTH_INSTALLED_REF)" ]]; then echo "up to date (${latest:0:12})"; exit 0; fi
       echo "updating $(env_get MOTH_INSTALLED_REF | cut -c1-12) → ${latest:0:12}"
     fi
-    echo "${B}Backing up the database first…${Z}"; "$0" backup
+    echo "${B}Backing up the database first…${Z}"; bash "$0" backup
     tmp="$(mktemp)"; curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/install.sh" -o "$tmp"
     MOTH_DIR="$MOTH_DIR" bash "$tmp" --unattended ${ver:+--version "$ver"}; rm -f -- "$tmp"
     # Reclaim disk from superseded images and old build cache.
@@ -118,7 +118,7 @@ case "$cmd" in
     f="${1:-}"; [[ -f "$f" ]] || die "Usage: moth restore <backup.sql.gz>"
     read -r -p "This replaces the current database with $f. Type RESTORE to continue: " c </dev/tty
     [[ "$c" == "RESTORE" ]] || die "Cancelled."
-    "$0" backup
+    bash "$0" backup
     dc stop bot dashboard
     if [[ "$f" == *.gz ]]; then gunzip -c "$f"; else cat "$f"; fi | dc exec -T postgres sh -c 'psql -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
     dc up -d
