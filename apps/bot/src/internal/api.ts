@@ -116,11 +116,11 @@ route("POST", "/v1/guilds/:guildId/architect/sessions/:sessionId/messages", asyn
 });
 route("POST", "/v1/guilds/:guildId/architect/sessions/:sessionId/plan", async ({ guild, params, body }) => {
   const s = await getSession(guild.id, params.sessionId); if (!s) throw new HttpError(404, "Session not found");
-  return refreshPlan(guild, s, z.object({ prune: z.boolean().optional(), resetPermissions: z.boolean().optional(), reorder: z.boolean().optional() }).parse(body.options ?? {}));
+  return refreshPlan(guild, s, z.object({ prune: z.boolean().optional(), resetPermissions: z.boolean().optional(), reorder: z.boolean().optional(), removeBots: z.boolean().optional() }).parse(body.options ?? {}));
 });
 route("POST", "/v1/guilds/:guildId/architect/sessions/:sessionId/apply", async ({ guild, params, body }) => {
   const s = await getSession(guild.id, params.sessionId); if (!s) throw new HttpError(404, "Session not found");
-  const opts = z.object({ excludeOpIds: z.array(z.string()).default([]), approveDestructive: z.array(z.string()).default([]), prune: z.boolean().optional(), resetPermissions: z.boolean().optional(), reorder: z.boolean().optional() }).parse(body);
+  const opts = z.object({ excludeOpIds: z.array(z.string()).default([]), approveDestructive: z.array(z.string()).default([]), prune: z.boolean().optional(), resetPermissions: z.boolean().optional(), reorder: z.boolean().optional(), removeBots: z.boolean().optional(), cleanMessages: z.boolean().optional() }).parse(body);
   const a = await actor(guild, body);
   // Applying can take minutes — run in the background and stream progress via events.
   void applySession(guild, s, a.id, opts, (done, total, description) => void publishEvent("architect.updated", guild.id, { sessionId: s.id, progress: { done, total, description } }))

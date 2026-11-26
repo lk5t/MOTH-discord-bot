@@ -191,10 +191,13 @@ if [[ -n "$TAG" ]] && curl -fsSL "https://github.com/${REPO}/archive/refs/tags/$
   IMAGE_VERSION="${TAG#v}"
 else
   [[ "$INSTALL_VERSION" != "latest" ]] && die "Release ${INSTALL_VERSION} not found."
-  warn "No published release found — installing the latest main branch."
-  curl -fsSL "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" -o "$WORK/moth.tar.gz" || die "Could not download MOTH from GitHub."
+  # Pin the exact main-branch commit so auto-update can tell when something changed.
+  MAIN_SHA=$(curl -fsSL "https://api.github.com/repos/${REPO}/commits/main" 2>/dev/null | grep -m1 '"sha"' | cut -d'"' -f4 || true)
+  warn "No published release found — installing the latest main branch${MAIN_SHA:+ (${MAIN_SHA:0:7})}."
+  curl -fsSL "https://github.com/${REPO}/archive/${MAIN_SHA:-refs/heads/main}.tar.gz" -o "$WORK/moth.tar.gz" || die "Could not download MOTH from GitHub."
   IMAGE_VERSION="latest"; FORCE_BUILD=1
 fi
+INSTALLED_REF="${TAG:-${MAIN_SHA:-main}}"
 mkdir -p "$WORK/src"
 tar -xzf "$WORK/moth.tar.gz" -C "$WORK/src" --strip-components=1 || die "Downloaded archive is corrupt."
 [[ -f "$WORK/src/docker-compose.yml" ]] || die "Downloaded archive doesn't look like MOTH."
@@ -258,12 +261,22 @@ for secret in POSTGRES_PASSWORD MOTH_ENCRYPTION_KEY INTERNAL_API_SECRET; do
   [[ -n "$(get_env $secret)" ]] || set_env "$secret" "$(openssl rand -hex 32)"
 done
 set_env MOTH_VERSION "$IMAGE_VERSION"
+set_env MOTH_INSTALLED_REF "$INSTALLED_REF"
+[[ -n "$(get_env MOTH_AUTO_UPDATE)" ]] || set_env MOTH_AUTO_UPDATE 1
 ok "Secrets generated and stored in $ENV_FILE (mode 600)"
 
 # ─── 7. AI provider ───
 step "Setting up AI"
 # Picks a local model that fits in memory (CPU inference; bigger = smarter but slower).
-default_local_model() { if [[ "$RAM_MB" -ge 7500 ]]; then echo "llama3.1:8b"; elif [[ "$RAM_MB" -ge 3800 ]]; then echo "llama3.2:3b"; else echo "llama3.2:1b"; fi; }
+# Qwen 2.5 follows instructions and produces structured output well for its size.
+default_local_model() {
+  local disk_gb; disk_gb=$(df -Pk "$MOTH_DIR" 2>/dev/null | awk 'NR==2 {print int($4/1048576)}'); disk_gb=${disk_gb:-0}
+  if [[ "$RAM_MB" -ge 15000 && "$disk_gb" -ge 20 ]]; then echo "qwen2.5:14b"
+  elif [[ "$RAM_MB" -ge 7500 && "$disk_gb" -ge 12 ]]; then echo "qwen2.5:7b"
+  elif [[ "$RAM_MB" -ge 3800 ]]; then echo "qwen2.5:3b"
+  else echo "qwen2.5:1.5b"; fi
+}
+OLD_LOCAL_MODEL=""
 validate_key() { # validate_key PROVIDER KEY → 0 ok / 1 rejected / 2 unknown
   local code
   case "$1" in
@@ -314,7 +327,12 @@ case "$AI_MODE" in
     set_env AI_TIMEOUT_MS 600000; set_env MOTH_LOCAL_AI 1
     [[ "$RAM_MB" -lt 3800 ]] && warn "Only ${RAM_MB} MB RAM — local AI will be slow and basic. An API key gives much better results."
     ok "Free local AI with Ollama · model ${LOCAL_MODEL} (downloaded when MOTH starts)" ;;
-  keep) ok "Keeping existing AI provider ($CUR_AI · $(get_env AI_MODEL))" ;;
+  keep)
+    # Upgrade earlier default local models to the current, smarter default.
+    if [[ "$(get_env MOTH_LOCAL_AI)" == 1 ]] && [[ "$(get_env AI_MODEL)" =~ ^llama3\.(2:1b|2:3b|1:8b)$ ]]; then
+      OLD_LOCAL_MODEL="$(get_env AI_MODEL)"; set_env AI_MODEL "$(default_local_model)"
+      ok "Upgrading local AI: ${OLD_LOCAL_MODEL} → $(get_env AI_MODEL)"
+    else ok "Keeping existing AI provider ($CUR_AI · $(get_env AI_MODEL))"; fi ;;
   *) [[ -z "$CUR_AI" ]] && set_env AI_PROVIDER none
      if [[ "$RAM_MB" -lt 3000 ]]; then ok "This server has ${RAM_MB} MB RAM — too little for local AI, so MOTH uses its built-in designer (no key needed)"
      else ok "AI skipped — MOTH uses its built-in designer"; fi ;;
@@ -362,7 +380,7 @@ fi
 
 # ─── 12. Automatic startup ───
 step "Configuring automatic startup"
-install -m 0755 "$MOTH_DIR/scripts/moth" /usr/local/bin/moth
+install -m 0755 "$MOTH_DIR/scripts/moth" /usr/local/bin/moth.new && mv -f /usr/local/bin/moth.new /usr/local/bin/moth   # atomic: safe while moth is running
 if [[ $HAS_SYSTEMD == 1 ]]; then
   DOCKER_BIN="$(command -v docker)"
   cat >/etc/systemd/system/moth.service <<EOF
@@ -385,9 +403,41 @@ TimeoutStartSec=900
 [Install]
 WantedBy=multi-user.target
 EOF
+  # Automatic updates: check every 3 hours; only updates when a new version exists.
+  cat >/etc/systemd/system/moth-update.service <<EOF
+[Unit]
+Description=MOTH automatic update
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=MOTH_DIR=${MOTH_DIR}
+ExecStart=/usr/local/bin/moth update --auto
+TimeoutStartSec=3600
+EOF
+  cat >/etc/systemd/system/moth-update.timer <<EOF
+[Unit]
+Description=Check for MOTH updates every 3 hours
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=3h
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
   run systemctl daemon-reload; run systemctl enable moth.service
+  if [[ "$(get_env MOTH_AUTO_UPDATE)" != 0 ]]; then run systemctl enable --now moth-update.timer; ok "Automatic updates on (checks every 3 hours · turn off: moth autoupdate off)"
+  else run systemctl disable --now moth-update.timer || true; ok "Automatic updates are off (turn on: moth autoupdate on)"; fi
   ok "systemd unit moth.service enabled (plus Docker restart policies)"
 else
+  if [[ "$(get_env MOTH_AUTO_UPDATE)" != 0 ]]; then
+    echo "$(( RANDOM % 60 )) */3 * * * root MOTH_DIR=${MOTH_DIR} /usr/local/bin/moth update --auto >/dev/null 2>&1" >/etc/cron.d/moth-update
+    ok "Automatic updates on (cron, every 3 hours)"
+  fi
   ok "Docker restart policies will start MOTH on boot"
 fi
 ok "Management CLI installed: moth"
@@ -411,6 +461,7 @@ if [[ $NO_START == 1 ]]; then warn "--no-start given; run 'moth start' when read
     info "Downloading local AI model ${M} (one-time, can take several minutes)…"
     for _ in $(seq 1 30); do docker compose exec -T ollama ollama list >/dev/null 2>&1 && break; sleep 2; done
     if docker compose exec -T ollama ollama pull "$M" >>"$LOG_FILE" 2>&1; then ok "Local AI model ${M} ready"
+      [[ -n "$OLD_LOCAL_MODEL" && "$OLD_LOCAL_MODEL" != "$M" ]] && { run docker compose exec -T ollama ollama rm "$OLD_LOCAL_MODEL" || true; }
     else warn "Model download failed — retry later with: moth ai local ${M}"; fi
   fi
 fi

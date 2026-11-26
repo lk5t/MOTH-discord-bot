@@ -22,6 +22,8 @@ export interface PlanOptions {
   mode: ArchitectMode;
   /** Delete roles/channels that the blueprint does not mention (Full Redesign / fresh servers). */
   prune?: boolean;
+  /** Kick every other bot from the server (Full Redesign). */
+  removeBots?: boolean;
   /** Replace permission overwrites instead of merging with existing ones. */
   resetPermissions?: boolean;
   /** Reorder existing channels/roles to match the blueprint. */
@@ -44,6 +46,7 @@ export type PlanOp = OpBase & (
   | { kind: "channel.create"; ref: string; parent: string | null; data: ChannelData; overwrites: PlannedOverwrite[] | null }
   | { kind: "channel.update"; ref: string; channelId: string; parent?: string | null; data: Partial<ChannelData>; overwrites?: PlannedOverwrite[] }
   | { kind: "channel.delete"; channelId: string; name: string; channelType: SnapshotChannelType }
+  | { kind: "bot.remove"; userId: string; name: string }
   | { kind: "channels.reorder"; order: { ref: string; parent: string | null }[] }
   | { kind: "message.post"; channel: string; content?: string; embed?: EmbedData; pin?: boolean }
   | { kind: "verification.publish"; channel: string }
@@ -274,7 +277,10 @@ class Planner {
       }
     };
 
-    for (const c of bp.channels) planChannel(c, null, null, null);
+    // In quick edits / improvements, listing an existing channel at the top level means "change it",
+    // not "move it out of its category".
+    const topParent = opts.mode === "quick" || opts.mode === "improve" ? undefined : null;
+    for (const c of bp.channels) planChannel(c, null, topParent, null);
     for (const cat of bp.categories) {
       const ref = `chan:${keyOf(cat)}`;
       order.push({ ref, parent: null });
@@ -329,13 +335,27 @@ class Planner {
       }
     }
 
+    // Other bots: explicit removals, or all of them when removeBots is on.
+    const removedBots = new Set<string>();
+    const removeBot = (b: { id: string; name: string; kickable: boolean }, why: string) => {
+      if (removedBots.has(b.id)) return;
+      if (!b.kickable) { this.warnings.push(`Bot ${b.name} can't be removed — its role is above MOTH's. Move MOTH's role higher.`); return; }
+      removedBots.add(b.id);
+      this.push({ kind: "bot.remove", userId: b.id, name: b.name, destructive: true, description: `Remove bot ${b.name} (${why})` });
+    };
+    for (const name of bp.removals.bots) {
+      const b = snap.bots?.find((x) => x.id === name || normaliseName(x.name) === normaliseName(name));
+      if (b) removeBot(b, "requested"); else this.warnings.push(`Bot to remove "${name}" not found.`);
+    }
+    if (opts.removeBots) for (const b of snap.bots ?? []) removeBot(b, "MOTH replaces it");
+
     const count = (pred: (o: PlanOp) => boolean) => this.ops.filter(pred).length;
     return {
       mode: opts.mode, generatedAt: new Date().toISOString(), guildId: snap.id, refs: this.refs, ops: this.ops, warnings: [...new Set(this.warnings)],
       summary: {
         creates: count((o) => o.kind.endsWith(".create") && !["ticketpanel.create", "rolemenu.create", "automation.create"].includes(o.kind)),
         updates: count((o) => o.kind.endsWith(".update") && o.kind !== "config.update"),
-        deletes: count((o) => o.kind.endsWith(".delete")),
+        deletes: count((o) => o.kind.endsWith(".delete") || o.kind === "bot.remove"),
         features: count((o) => ["config.update", "ticketpanel.create", "rolemenu.create", "automation.create", "verification.publish", "message.post"].includes(o.kind)),
         destructive: count((o) => o.destructive),
       },

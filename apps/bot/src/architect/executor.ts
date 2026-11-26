@@ -2,7 +2,7 @@ import {
   ChannelType, GuildFeature, OverwriteType, PermissionFlagsBits, PermissionsBitField, type CategoryChannel, type Guild, type GuildChannel,
   type OverwriteResolvable, type PermissionsString, type Role,
 } from "discord.js";
-import { inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   automations, getDb, getGuildConfigWithVersion, publishEvent, roleMenus, ticketPanels, updateGuildConfig,
   type ArchitectPlan, type PlanOp, type PlannedOverwrite, type GuildSnapshot, type SnapshotChannel, type TicketCategoryDef,
@@ -21,6 +21,10 @@ export interface ApplyResult {
   created: { kind: "role" | "channel"; id: string }[];
   updated: { kind: "role" | "channel"; id: string }[];
   deleted: { kind: "role" | "channel"; id: string; name: string }[];
+  /** Other bots removed from the server (can't be re-added automatically). */
+  removedBots?: { id: string; name: string }[];
+  /** MOTH's own earlier messages that were cleaned up. */
+  cleanedMessages?: number;
   messages: { channelId: string; messageId: string }[];
   moth: { ticketPanels: string[]; roleMenus: string[]; automations: string[] };
   configBefore: unknown | null;
@@ -38,13 +42,41 @@ function validPerms(names: string[], botPerms: Readonly<PermissionsBitField>): P
 }
 
 /** Executes an architect plan against a guild. Ops are applied in order; failures are recorded and execution continues. */
-export async function executePlan(guild: Guild, plan: ArchitectPlan, opts: { excludeOpIds?: string[]; approveDestructive?: string[]; actorId: string; onProgress?: ApplyProgress }): Promise<ApplyResult> {
+export async function executePlan(guild: Guild, plan: ArchitectPlan, opts: { excludeOpIds?: string[]; approveDestructive?: string[]; actorId: string; onProgress?: ApplyProgress; cleanMessages?: boolean }): Promise<ApplyResult> {
   const me = guild.members.me ?? await guild.members.fetchMe();
   const refs: Record<string, string> = { ...plan.refs };
   const exclude = new Set(opts.excludeOpIds ?? []);
   const approved = new Set(opts.approveDestructive ?? []);
   const res: ApplyResult = { completed: [], skipped: [], errors: [], created: [], updated: [], deleted: [], messages: [], moth: { ticketPanels: [], roleMenus: [], automations: [] }, configBefore: null, refs };
   const community = guild.features.includes(GuildFeature.Community);
+  res.removedBots = []; res.cleanedMessages = 0;
+
+  /**
+   * Deletes MOTH's own earlier posts (old rules embeds, panels, role menus…) in a
+   * channel before posting new ones, so re-running the Architect never stacks
+   * duplicates. Interaction replies and messages from this run are kept.
+   */
+  const cleaned = new Set<string>();
+  const cleanChannel = async (channelId: string | null) => {
+    if (opts.cleanMessages === false || !channelId || cleaned.has(channelId)) return;
+    cleaned.add(channelId);
+    const ch = guild.channels.cache.get(channelId);
+    if (!ch?.isTextBased() || !("bulkDelete" in ch)) return;
+    const msgs = await ch.messages.fetch({ limit: 100 }).catch(() => null);
+    if (!msgs) return;
+    const keep = new Set(res.messages.map((m) => m.messageId));
+    const mine = [...msgs.values()].filter((m) => m.author.id === me.id && !m.interactionMetadata && !keep.has(m.id) && !m.reference);
+    if (!mine.length) return;
+    const recent = mine.filter((m) => Date.now() - m.createdTimestamp < 13 * 86_400_000);
+    const old = mine.filter((m) => !recent.includes(m));
+    if (recent.length > 1) await ch.bulkDelete(recent, true).catch(() => undefined); else for (const m of recent) await m.delete().catch(() => undefined);
+    for (const m of old) await m.delete().catch(() => undefined);
+    res.cleanedMessages! += mine.length;
+    // Panels and menus whose messages were removed no longer exist in Discord.
+    const ids = mine.map((m) => m.id);
+    await getDb().update(ticketPanels).set({ messageId: null }).where(and(eq(ticketPanels.guildId, guild.id), inArray(ticketPanels.messageId, ids)));
+    await getDb().update(roleMenus).set({ messageId: null }).where(and(eq(roleMenus.guildId, guild.id), inArray(roleMenus.messageId, ids)));
+  };
 
   const resolve = (ref: string | null | undefined): string | null => {
     if (!ref) return null;
@@ -184,6 +216,14 @@ export async function executePlan(guild: Guild, plan: ArchitectPlan, opts: { exc
         await ch.delete("MOTH Architect"); res.deleted.push({ kind: "channel", id: op.channelId, name: op.name });
         return;
       }
+      case "bot.remove": {
+        const m = await guild.members.fetch(op.userId).catch(() => null);
+        if (!m) return;
+        if (!m.kickable) throw new Error(`${op.name}'s role is above MOTH's`);
+        await m.kick("MOTH Architect: Full Redesign");
+        res.removedBots!.push({ id: op.userId, name: op.name });
+        return;
+      }
       case "channels.reorder": {
         const counters = new Map<string | null, number>();
         const positions = op.order.map((o) => {
@@ -197,6 +237,7 @@ export async function executePlan(guild: Guild, plan: ArchitectPlan, opts: { exc
       case "message.post": {
         const ch = channelOf(op.channel);
         if (!ch?.isTextBased() || !("send" in ch)) throw new Error("Target channel not found");
+        await cleanChannel(ch.id);
         const msg = await ch.send({ content: op.content, embeds: op.embed ? [toApiEmbed(op.embed)] : [], allowedMentions: { parse: [] } });
         if (op.pin) await msg.pin().catch(() => undefined);
         res.messages.push({ channelId: ch.id, messageId: msg.id });
@@ -208,6 +249,7 @@ export async function executePlan(guild: Guild, plan: ArchitectPlan, opts: { exc
         return;
       }
       case "verification.publish": {
+        await cleanChannel(resolve(op.channel));
         const msgId = await publishVerification(guild);
         const chId = resolve(op.channel); if (chId) res.messages.push({ channelId: chId, messageId: msgId });
         return;
@@ -222,6 +264,9 @@ export async function executePlan(guild: Guild, plan: ArchitectPlan, opts: { exc
           id: `c${n + 1}`, label: c.label, emoji: c.emoji, description: c.description, parentCategoryId: parent,
           staffRoleIds: c.staffRoles.map(resolve).filter((x): x is string => !!x), questions: c.questions,
         }));
+        await cleanChannel(channelId);
+        // Replace an earlier panel with the same name instead of keeping a duplicate.
+        await getDb().delete(ticketPanels).where(and(eq(ticketPanels.guildId, guild.id), eq(ticketPanels.name, p.name)));
         const [row] = await getDb().insert(ticketPanels).values({ guildId: guild.id, name: p.name, channelId, style: categories.length > 5 ? "select" : "buttons", embed: { title: p.title ?? "Support", description: p.description ?? "Open a ticket below." }, categories, staffRoleIds: staff, parentCategoryId: parent }).returning();
         res.moth.ticketPanels.push(row.id);
         const pub = await publishPanel(guild, row.id);
@@ -233,6 +278,8 @@ export async function executePlan(guild: Guild, plan: ArchitectPlan, opts: { exc
         const channelId = resolve(m.channel);
         if (!channelId) throw new Error("Role menu channel not found");
         const options = m.options.map((o) => ({ roleId: resolve(o.role), label: o.label, emoji: o.emoji, description: o.description })).filter((o): o is typeof o & { roleId: string } => !!o.roleId);
+        await cleanChannel(channelId);
+        await getDb().delete(roleMenus).where(and(eq(roleMenus.guildId, guild.id), eq(roleMenus.name, m.name)));
         const [row] = await getDb().insert(roleMenus).values({ guildId: guild.id, name: m.name, channelId, style: m.style, mode: m.mode, embed: { title: m.title, description: m.description }, options }).returning();
         res.moth.roleMenus.push(row.id);
         const pub = await publishRoleMenu(guild, row.id);
@@ -240,6 +287,7 @@ export async function executePlan(guild: Guild, plan: ArchitectPlan, opts: { exc
         return;
       }
       case "automation.create": {
+        await getDb().delete(automations).where(and(eq(automations.guildId, guild.id), eq(automations.name, op.name)));
         const [row] = await getDb().insert(automations).values({ guildId: guild.id, name: op.name, description: op.about, definition: deepResolve(op.definition), createdBy: opts.actorId }).returning();
         res.moth.automations.push(row.id);
         invalidateAutomations(guild.id);
@@ -299,6 +347,7 @@ export async function rollbackPlan(guild: Guild, result: ApplyResult, backup: Gu
       if (snap && ch) await attempt(`restore #${snap.name}`, () => ch.edit({ name: snap.name, ...(snap.type === "category" ? {} : { parent: snap.parentId ? idMap.get(snap.parentId) ?? snap.parentId : null, lockPermissions: false }), ...(["text", "announcement", "forum"].includes(snap.type) ? { topic: snap.topic ?? "", rateLimitPerUser: snap.rateLimitPerUser ?? 0, nsfw: !!snap.nsfw } : {}), permissionOverwrites: mapOw(snap), reason: "MOTH Architect rollback" } as never));
     }
   }
+  if (result.removedBots?.length) errors.push(`Removed bots can't be re-added automatically — re-invite them: ${result.removedBots.map((b) => b.name).join(", ")}`);
   if (backup.verificationLevel !== guild.verificationLevel) await attempt("verification level", () => guild.setVerificationLevel(backup.verificationLevel, "MOTH Architect rollback"));
   await publishEvent("guild.updated", guild.id, { rollback: true });
   return { restored, errors };

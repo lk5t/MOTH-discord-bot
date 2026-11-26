@@ -31,7 +31,7 @@ export function ArchitectView() {
   const [busy, setBusy] = useState(false);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [approved, setApproved] = useState<Set<string>>(new Set());
-  const [opts, setOpts] = useState({ prune: false, resetPermissions: false, reorder: true });
+  const [opts, setOpts] = useState({ prune: false, resetPermissions: false, reorder: true, removeBots: false, cleanMessages: true });
   const [progress, setProgress] = useState<{ done: number; total: number; description: string } | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
   const sessions = useApi<SessionRow[]>(`/api/guilds/${guildId}/architect/sessions`);
@@ -40,6 +40,8 @@ export function ArchitectView() {
 
   useEffect(() => { chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: "smooth" }); }, [session?.messages.length, busy]);
   useEffect(() => { setExcluded(new Set()); setApproved(new Set()); }, [session?.plan?.generatedAt]);
+  // Full Redesign removes unlisted channels, roles and other bots by default (each removal still needs approval).
+  useEffect(() => { if (session) setOpts((o) => ({ ...o, prune: session.mode === "redesign", removeBots: session.mode === "redesign" })); }, [session?.id, session?.mode]);
 
   useLive(guildId, ["architect.updated"], async (e) => {
     if (!session || e.data?.sessionId !== session.id) return;
@@ -79,7 +81,8 @@ export function ArchitectView() {
   async function replan(next = opts) {
     if (!session) return;
     setOpts(next);
-    try { setSession(await api<Session>(`/api/guilds/${guildId}/architect/sessions/${session.id}/plan`, { body: { options: next } })); } catch (e) { toast((e as Error).message, true); }
+    const { cleanMessages, ...planOpts } = next; void cleanMessages;
+    try { setSession(await api<Session>(`/api/guilds/${guildId}/architect/sessions/${session.id}/plan`, { body: { options: planOpts } })); } catch (e) { toast((e as Error).message, true); }
   }
 
   const plan = session?.plan ?? null;
@@ -162,7 +165,9 @@ export function ArchitectView() {
               {plan && <div className="row wrap mb"><Chip tone="ok">+{plan.summary.creates} create</Chip><Chip tone="warn">{plan.summary.updates} update</Chip><Chip tone="crim">−{plan.summary.deletes} delete</Chip><Chip tone="info">{plan.summary.features} features</Chip></div>}
               <Structure bp={session.blueprint} opMap={opMap} />
             </Card>
-            {plan && <Card title="Changes" subtitle="Untick anything you don't want. Destructive changes need explicit approval." actions={<span className="small faint">{willRun}/{ops.length} selected</span>}>
+            {plan && <Card title="Changes" subtitle="Untick anything you don't want. Destructive changes need explicit approval." actions={<>{session.status === "drafting" && plan.summary.destructive > 0 && (approved.size < plan.summary.destructive
+                ? <Button size="sm" variant="danger" onClick={() => { setApproved(new Set(ops.filter((o) => o.destructive).map((o) => o.id))); const x = new Set(excluded); ops.filter((o) => o.destructive).forEach((o) => x.delete(o.id)); setExcluded(x); }}>Approve all {plan.summary.destructive} removals</Button>
+                : <Button size="sm" onClick={() => setApproved(new Set())}>Unapprove removals</Button>)}<span className="small faint">{willRun}/{ops.length} selected</span></>}>
               <div style={{ maxHeight: 360, overflowY: "auto", margin: "0 -10px" }}>
                 {ops.map((o) => {
                   const on = !excluded.has(o.id) && (!o.destructive || approved.has(o.id));
@@ -180,12 +185,14 @@ export function ArchitectView() {
               {!!plan.warnings.length && <details className="mt small"><summary className="faint" style={{ cursor: "pointer" }}>{plan.warnings.length} note(s)</summary><ul className="faint">{plan.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></details>}
               <div className="divider" />
               <div className="stack" style={{ gap: 0 }}>
-                {(session.mode === "redesign" || session.mode === "create") && <div className="toggle-row"><div><div className="t">Remove unlisted channels & roles</div><div className="d">Prune everything not in the blueprint (marked destructive).</div></div><Switch checked={opts.prune} onChange={(v) => replan({ ...opts, prune: v })} disabled={session.status !== "drafting"} /></div>}
+                {(session.mode === "redesign" || session.mode === "create") && <div className="toggle-row"><div><div className="t">Remove unlisted channels & roles</div><div className="d">Delete everything not in the new design (each removal is marked destructive).</div></div><Switch checked={opts.prune} onChange={(v) => replan({ ...opts, prune: v })} disabled={session.status !== "drafting"} /></div>}
+                {session.mode === "redesign" && <div className="toggle-row"><div><div className="t">Remove other bots</div><div className="d">Kick other bots that MOTH replaces (marked destructive).</div></div><Switch checked={opts.removeBots} onChange={(v) => replan({ ...opts, removeBots: v })} disabled={session.status !== "drafting"} /></div>}
+                <div className="toggle-row"><div><div className="t">Delete MOTH&apos;s old messages</div><div className="d">Before posting new rules, panels and menus, remove MOTH&apos;s earlier posts in those channels.</div></div><Switch checked={opts.cleanMessages} onChange={(v) => setOpts({ ...opts, cleanMessages: v })} disabled={session.status !== "drafting"} /></div>
                 <div className="toggle-row"><div><div className="t">Replace channel permissions</div><div className="d">Off = merge with existing overwrites (recommended).</div></div><Switch checked={opts.resetPermissions} onChange={(v) => replan({ ...opts, resetPermissions: v })} disabled={session.status !== "drafting"} /></div>
                 <div className="toggle-row"><div><div className="t">Reorder channels & roles</div><div className="d">Arrange everything in blueprint order.</div></div><Switch checked={opts.reorder} onChange={(v) => replan({ ...opts, reorder: v })} disabled={session.status !== "drafting"} /></div>
               </div>
               {progress && <div className="mt"><div className="row between small mb"><span>{progress.description}</span><span className="mono">{progress.done}/{progress.total}</span></div><Progress value={(progress.done / Math.max(1, progress.total)) * 100} /></div>}
-              {session.result && <div className="mt small">{session.result.errors.length > 0 && <details><summary style={{ color: "#ff6b85", cursor: "pointer" }}>{session.result.errors.length} change(s) failed</summary><ul>{session.result.errors.map((e, i) => <li key={i}>{e.description}: <span className="faint">{e.error}</span></li>)}</ul></details>}</div>}
+              {session.result && <div className="mt small">{((session.result as { removedBots?: unknown[] }).removedBots?.length ?? 0) > 0 && <div className="faint">Removed {(session.result as { removedBots?: unknown[] }).removedBots!.length} bot(s).</div>}{((session.result as { cleanedMessages?: number }).cleanedMessages ?? 0) > 0 && <div className="faint">Cleaned up {(session.result as { cleanedMessages?: number }).cleanedMessages} old MOTH message(s).</div>}{session.result.errors.length > 0 && <details><summary style={{ color: "#ff6b85", cursor: "pointer" }}>{session.result.errors.length} change(s) failed</summary><ul>{session.result.errors.map((e, i) => <li key={i}>{e.description}: <span className="faint">{e.error}</span></li>)}</ul></details>}</div>}
               <div className="row mt" style={{ justifyContent: "flex-end" }}>
                 {session.status === "drafting" && <><Button variant="ghost" onClick={async () => { await api(`/api/guilds/${guildId}/architect/sessions/${session.id}/cancel`, { body: {} }); setSession(null); void sessions.reload(); }}>Discard</Button><Button variant="primary" onClick={apply} disabled={!willRun} icon={<I.check />}>Apply {willRun} changes</Button></>}
                 {session.status === "applying" && <Button loading>Applying…</Button>}

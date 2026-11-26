@@ -114,7 +114,8 @@ Discord doesn't let bots create guilds. Create an empty server in Discord, invit
 ```text
 moth status            service health
 moth logs bot -f       follow logs (bot, dashboard, postgres, migrate, caddy)
-moth update            upgrade (backs up the database first)
+moth update            upgrade now (backs up the database first)
+moth autoupdate        automatic updates: on by default, checked every 3 hours (on|off)
 moth backup            pg_dump to /opt/moth/backups
 moth restore <file>    restore a dump
 moth config            edit .env and restart
@@ -122,6 +123,8 @@ moth doctor            check the token, privileged intents, config and container
 moth url               dashboard URL, OAuth redirect and invite link
 moth uninstall
 ```
+
+**Automatic updates.** A systemd timer checks GitHub every 3 hours. When a new version is published, MOTH backs up the database, builds the new version while the current one keeps running, and switches over in seconds. Your configuration and data are always kept. The log is at `/var/log/moth-update.log`.
 
 MOTH also takes daily configuration backups of each server's Discord structure and MOTH settings, plus a backup before every Architect change. You can view, download and restore them from **Server Settings → Backups**.
 
@@ -138,16 +141,16 @@ MOTH also takes daily configuration backups of each server's Discord structure a
 
 ## AI providers
 
-**No API key is needed.** On servers with 3 GB+ RAM, the installer automatically runs a free local AI model (Ollama) next to MOTH and picks a model size that fits your memory. On smaller servers MOTH uses its built-in designer and audit, which need no AI at all.
+**No API key is needed.** On servers with 3 GB+ RAM, the installer automatically runs a free local AI model next to MOTH (Qwen 2.5 via Ollama) and picks the biggest size that fits: 3B, 7B (8 GB RAM) or 14B (16 GB RAM). On smaller servers MOTH uses its built-in designer and audit, which need no AI at all.
 
-With local AI, the Architect uses the fast built-in designer for New server, Smart Improve and Full Redesign. It uses the local model for free-form quick edits, `/ask`, chat, summaries and command or automation generation.
+With local AI, the Architect asks the model for a short design brief: it reads your request and works out the server type, topics, features, custom sections and what to add, rename or remove. MOTH's designer then builds the full layout from that brief. This is fast on a CPU and reliable even with small models. The model also handles `/ask`, chat, summaries and command or automation generation.
 
 Optional, if you ever want stronger AI:
 
 ```bash
 sudo moth ai             # show what's running
 sudo moth ai key         # use an OpenAI / Anthropic / OpenRouter key instead
-sudo moth ai local       # switch back to the free local model (optionally: moth ai local llama3.1:8b)
+sudo moth ai local       # switch back to the free local model (optionally: moth ai local qwen2.5:7b)
 sudo moth ai off
 ```
 

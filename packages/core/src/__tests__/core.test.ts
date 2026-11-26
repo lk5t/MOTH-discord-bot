@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildPlan, designFromPrompt, analyzeServer, parseDuration, renderTemplate, levelFromXp, xpForLevel,
   defaultGuildConfig, parseGuildConfig, encryptSecret, decryptSecret, extractJson, matchesTrigger,
-  customCommandSchema, automationSchema, cronFromText, BUILTIN_TEMPLATES, builtinTemplate, snapshotToBlueprint, toBits, fromBits,
+  customCommandSchema, automationSchema, cronFromText, sanitizePlaceholders, BUILTIN_TEMPLATES, builtinTemplate, snapshotToBlueprint, toBits, fromBits,
   type GuildSnapshot,
 } from "../index.js";
 
@@ -150,4 +150,40 @@ test("schedule phrases become cron expressions", () => {
   assert.equal(cronFromText("every monday and thursday at 8 pm"), "0 20 * * 1,4");
   assert.equal(cronFromText("on weekdays at 7am"), "0 7 * * 1-5");
   assert.equal(cronFromText("when someone says hello"), null);
+});
+
+test("full redesign can remove other bots; quick edits only when asked", () => {
+  const snap = freshSnapshot();
+  snap.bots = [{ id: "700000000000000001", name: "MEE6", kickable: true }, { id: "700000000000000002", name: "Dyno", kickable: false }];
+  const plan = buildPlan(snap, { categories: [{ name: "Chat", channels: [{ name: "general" }] }] }, { mode: "redesign", prune: true, removeBots: true });
+  const bots = plan.ops.filter((o) => o.kind === "bot.remove");
+  assert.equal(bots.length, 1); // Dyno is above MOTH → warning instead
+  assert.ok(bots[0].destructive);
+  assert.ok(plan.warnings.some((w) => w.includes("Dyno")));
+  assert.ok(plan.ops.some((o) => o.kind === "channel.delete" && o.name === "General"));
+  const quick = buildPlan(snap, { removals: { bots: ["mee6"] } }, { mode: "quick" });
+  assert.equal(quick.ops.filter((o) => o.kind === "bot.remove").length, 1);
+  assert.equal(buildPlan(snap, { channels: [{ name: "lfg" }] }, { mode: "quick" }).ops.filter((o) => o.kind === "bot.remove").length, 0);
+});
+
+test("design briefs from a (fake) small model build full blueprints", async () => {
+  const { blueprintFromBrief, blueprintFromEditBrief } = await import("../index.js");
+  const fake = (answer: unknown) => ({ config: { kind: "ollama" }, completeJson: async (_m: unknown, schema: { parse: (x: unknown) => unknown }) => ({ data: schema.parse(answer), usage: { text: "", inputTokens: 1, outputTokens: 1, model: "fake" } }) }) as never;
+  const r = await blueprintFromBrief(fake({ kind: "Gaming", topics: ["Valorant"], features: ["tickets", "Leveling", "nonsense"], extra_sections: [{ name: "Tournaments", channels: ["brackets", { name: "Match Voice", type: "voice" }] }], reply: "A competitive Valorant hub." }), "valorant server with tournaments");
+  assert.ok(r.blueprint.categories.some((c) => /TOURNAMENTS/.test(c.name) && c.channels.some((ch) => ch.type === "voice")));
+  assert.ok(r.blueprint.features.tickets?.length);
+  assert.ok(r.blueprint.features.leveling);
+  assert.ok(r.reply.startsWith("A competitive Valorant hub."));
+  const snap = freshSnapshot();
+  const e = await blueprintFromEditBrief(fake({ add_sections: [{ name: "Music", channels: [{ name: "Song Requests" }] }], remove_channels: ["general", "does-not-exist"], features: ["tickets"] }), "add a music section", "", snap);
+  assert.equal(e.blueprint.categories!.length, 1);
+  assert.deepEqual(e.blueprint.removals!.channels, []); // not asked to remove → ignored
+  assert.match(e.featurePhrase, /ticket/);
+  const e2 = await blueprintFromEditBrief(fake({ remove_channels: ["general", "does-not-exist"] }), "remove the general channel", "", snap);
+  assert.deepEqual(e2.blueprint.removals!.channels, ["general"]); // only existing things
+});
+
+test("generated text keeps only real placeholders", () => {
+  assert.equal(sanitizePlaceholders("Hi {user}, see #{general} on {server}"), "Hi {user}, see #general on {server}");
+  assert.equal(sanitizePlaceholders("IP: {server}play.example.com {random:a|b}"), "IP: play.example.com {random:a|b}");
 });

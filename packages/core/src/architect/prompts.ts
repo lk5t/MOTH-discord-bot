@@ -33,7 +33,7 @@ Blueprint JSON shape (all fields optional unless noted):
     "automations": [ { "name": string, "description": string, "definition": { "trigger": {"type": "member_join"|"member_leave"|"message"|"reaction_add"|"schedule"|...}, "steps": [ {"kind":"action","action":{"type":"send_message","channelId":"ref:chan:<key>","message":{"content":"..."}}} ] } } ],
     "messages": [ { "channel": chanRef, "content": string, "embed": { "title": string, "description": string, "color": "#RRGGBB", "footer": string, "fields": [ {"name","value","inline"} ] }, "pin": bool } ]
   },
-  "removals": { "channels": [name], "categories": [name], "roles": [name] }
+  "removals": { "channels": [name], "categories": [name], "roles": [name], "bots": [bot name] }
 }
 roleRef / chanRef = a "key" from this blueprint, or the exact name of an existing role/channel. "@everyone" is a valid roleRef.
 Placeholders usable in messages: {user} {user.name} {server} {server.members} {channel}.
@@ -54,7 +54,7 @@ export function architectSystemPrompt(mode: ArchitectMode): string {
     create: "MODE: NEW SERVER. Design a complete server from scratch: roles, categories, channels, onboarding, verification, moderation, security, tickets, role menus, community features, automations and welcome/rules/FAQ embeds.",
     quick: "MODE: QUICK EDIT. Apply only the specific change requested. Return a PARTIAL blueprint containing just the new/changed items (and explicit removals). Do not restate unchanged parts of the server.",
     improve: "MODE: SMART IMPROVE. Analyse the server and propose targeted improvements as a PARTIAL blueprint (new/changed items only). Include an 'analysis' object.",
-    redesign: "MODE: FULL REDESIGN. Propose a comprehensive structural and visual redesign as a COMPLETE blueprint. Map existing channels to new names with renameFrom so history is preserved; list unneeded ones in removals only if the user wants cleanup.",
+    redesign: "MODE: FULL REDESIGN. Propose a comprehensive structural and visual redesign as a COMPLETE blueprint. Map existing channels to new names with renameFrom so history is preserved; anything not in the blueprint is removed (the user approves each removal), so include every channel worth keeping. If the user asks to remove other bots, list them in removals.bots.",
   };
   const shape = mode === "improve"
     ? `Respond with JSON: { "reply": "short friendly explanation of the proposal (markdown)", "analysis": { "score": 0-100, "summary": string, "findings": [ { "severity": "info|low|medium|high|critical", "area": "structure|permissions|security|moderation|onboarding|engagement|roles|branding", "title": string, "detail": string, "recommendation": string } ] }, "blueprint": <Blueprint>, "questions": [optional clarifying questions] }`

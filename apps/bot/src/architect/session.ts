@@ -1,7 +1,7 @@
 import type { Guild } from "discord.js";
 import { and, desc, eq, gte, sql } from "drizzle-orm";
 import {
-  analyzeServer, architectSessions, architectSystemPrompt, architectTurnSchema, blueprintSchema, buildPlan, builtinTemplate, channelActivity, configBackups,
+  analyzeServer, architectSessions, blueprintFromBrief, blueprintFromEditBrief, architectSystemPrompt, architectTurnSchema, blueprintSchema, buildPlan, builtinTemplate, channelActivity, configBackups,
   describeSnapshot, designFromPrompt, getDb, getGuildConfig, improveTurnSchema, inferIntent, composeBlueprint, logChange, looksFresh, publishEvent,
   recordAIUsage, resolveAIClient, normaliseName,
   type ArchitectMode, type ArchitectPlan, type Blueprint, type BlueprintInput, type ChatMessage, type GuildSnapshot, type ServerAnalysis,
@@ -13,7 +13,7 @@ import { log } from "../context.js";
 
 export type Session = typeof architectSessions.$inferSelect;
 
-export interface SessionOptions { prune?: boolean; resetPermissions?: boolean; reorder?: boolean }
+export interface SessionOptions { prune?: boolean; resetPermissions?: boolean; reorder?: boolean; removeBots?: boolean; cleanMessages?: boolean }
 
 async function activityMap(guildId: string): Promise<Map<string, number>> {
   const since = new Date(Date.now() - 30 * 86_400_000);
@@ -34,7 +34,9 @@ async function snapshotFor(guild: Guild): Promise<GuildSnapshot> {
 
 function planFor(snapshot: GuildSnapshot, guild: Guild, mode: ArchitectMode, blueprint: unknown, o: SessionOptions = {}): ArchitectPlan {
   return buildPlan(snapshot, blueprint, {
-    mode, prune: o.prune ?? (mode === "create" ? looksFresh(snapshot) : false), resetPermissions: o.resetPermissions ?? false,
+    // Full Redesign removes everything not in the new design by default; every removal is destructive and needs approval.
+    mode, prune: o.prune ?? (mode === "create" ? looksFresh(snapshot) : mode === "redesign"), resetPermissions: o.resetPermissions ?? false,
+    removeBots: o.removeBots ?? mode === "redesign",
     reorder: o.reorder ?? (mode === "create" || mode === "redesign"), protectedChannelIds: protectedChannelIds(guild),
   });
 }
@@ -42,7 +44,7 @@ function planFor(snapshot: GuildSnapshot, guild: Guild, mode: ArchitectMode, blu
 /** Rule-based quick edits used when no AI provider is configured. */
 function heuristicQuickEdit(prompt: string, snap: GuildSnapshot): { blueprint: BlueprintInput; reply: string } | null {
   const p = prompt.trim();
-  const bp: BlueprintInput = { roles: [], categories: [], channels: [], features: {}, removals: { channels: [], roles: [], categories: [] } };
+  const bp: BlueprintInput = { roles: [], categories: [], channels: [], features: {}, removals: { channels: [], roles: [], categories: [], bots: [] } };
   const did: string[] = [];
   const sec = p.match(/(?:create|add|make|build)\s+(?:a\s+|an\s+)?(?:new\s+)?(.{2,40}?)\s+(?:section|category)/i);
   if (sec) {
@@ -90,6 +92,11 @@ function heuristicQuickEdit(prompt: string, snap: GuildSnapshot): { blueprint: B
     bp.removals!.channels!.push(...inactive.map((c) => c.name));
     did.push(`cleanup of ${empty.length} empty categories and ${inactive.length} inactive channels${a.findings.length ? "" : ""}`);
   }
+  if (/\b(remove|kick|get rid of)\b.*\bbots?\b/i.test(p) && snap.bots?.length) {
+    const named = snap.bots.filter((b) => new RegExp(`\\b${b.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(p));
+    const list = named.length ? named : /\b(all|other|every)\b/i.test(p) ? snap.bots : [];
+    if (list.length) { bp.removals!.bots = list.map((b) => b.name); did.push(`removal of ${list.length} bot(s): ${list.map((b) => b.name).join(", ")}`); }
+  }
   if (!did.length) return null;
   return { blueprint: bp, reply: `Here's what I'll do: ${did.join(", ")}.\nReview the preview below — destructive changes stay unchecked until you approve them.` };
 }
@@ -107,11 +114,35 @@ export async function architectTurn(guild: Guild, session: Session, userMessage:
   let analysis: ServerAnalysis | null = (session.analysis as ServerAnalysis | null) ?? null;
   const audit = mode === "improve" || mode === "redesign" ? analyzeServer(snap, cfg) : null;
 
-  // Small local models are slow on CPU and weak at whole-server design: use the built-in
-  // designer for those modes, and the local model only for free-form quick edits.
+  // Local models (the free default) drive the Architect through short "design briefs":
+  // the model interprets the request, MOTH's designer builds the full layout.
   const local = ai?.config.kind === "ollama";
-  const quickHeuristic = mode === "quick" ? heuristicQuickEdit(userMessage, snap) : null;
-  const useAI = !!ai && !(local && (mode !== "quick" || quickHeuristic));
+  const useAI = !!ai && !local;
+  if (ai && local && mode !== "improve" && !/^template:/.test(userMessage)) {
+    try {
+      if (mode === "create" || mode === "redesign") {
+        const allPrompts = [...history.filter((m) => m.role === "user").map((m) => m.content), userMessage].join(". ");
+        const context = mode === "redesign" ? `This is a redesign of the existing server "${snap.name}". Its current channels: ${snap.channels.filter((c) => c.type !== "category").map((c) => c.name).slice(0, 60).join(", ")}.` : "";
+        const r = await blueprintFromBrief(ai, allPrompts, context);
+        blueprint = r.blueprint; reply = r.reply;
+        if (mode === "redesign") { analysis = audit; reply += "\n\nExisting channels with matching names are kept and moved so their history is preserved. Everything else is listed for removal — you approve each removal."; }
+        await recordAIUsage({ guildId: guild.id, userId: session.userId, feature: "architect", inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, providerKind: ai.config.kind });
+      } else if (mode === "quick") {
+        const r = await blueprintFromEditBrief(ai, userMessage, describeSnapshot(snap, 120), snap);
+        await recordAIUsage({ guildId: guild.id, userId: session.userId, feature: "architect", inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, providerKind: ai.config.kind });
+        const h = heuristicQuickEdit([r.featurePhrase, userMessage].filter(Boolean).join(", "), snap);
+        if (!r.empty || h) {
+          let next = blueprintSchema.parse(r.blueprint);
+          if (h) next = mergeBlueprints(next, blueprintSchema.parse(h.blueprint));
+          blueprint = blueprint ? mergeBlueprints(blueprint, next) : next;
+          reply = (r.reply || (h ? h.reply : "Here's the change.")) + "\nReview the preview below — removals stay unchecked until you approve them.";
+        }
+      }
+    } catch (err) {
+      log.warn({ err }, "local AI brief failed — using the built-in designer");
+      reply = "";
+    }
+  }
 
   if (ai && useAI) {
     const context = [
@@ -161,7 +192,7 @@ export async function architectTurn(guild: Guild, session: Session, userMessage:
       blueprint = blueprintSchema.parse(audit!.suggestions);
       reply = prefix + `${audit!.summary}\n\nI've proposed fixes for the issues I can address automatically. Ask me to change anything — e.g. "also add a ticket system".`;
     } else {
-      const q = quickHeuristic ?? heuristicQuickEdit(userMessage, snap);
+      const q = heuristicQuickEdit(userMessage, snap);
       if (q) {
         const merged = blueprint ? mergeBlueprints(blueprint, blueprintSchema.parse(q.blueprint)) : blueprintSchema.parse(q.blueprint);
         blueprint = merged; reply = prefix + q.reply;
@@ -186,7 +217,7 @@ function mergeBlueprints(a: Blueprint, b: Blueprint): Blueprint {
     channels: [...a.channels, ...b.channels],
     categories: [...a.categories, ...b.categories],
     features: { ...a.features, ...b.features },
-    removals: { channels: [...a.removals.channels, ...b.removals.channels], categories: [...a.removals.categories, ...b.removals.categories], roles: [...a.removals.roles, ...b.removals.roles] },
+    removals: { channels: [...new Set([...a.removals.channels, ...b.removals.channels])], categories: [...new Set([...a.removals.categories, ...b.removals.categories])], roles: [...new Set([...a.removals.roles, ...b.removals.roles])], bots: [...new Set([...a.removals.bots, ...b.removals.bots])] },
   });
 }
 
@@ -236,7 +267,7 @@ export async function applySession(guild: Guild, session: Session, actorId: stri
     const plan = fresh.plan as ArchitectPlan;
     await db.update(architectSessions).set({ status: "applying" }).where(eq(architectSessions.id, session.id));
     const backupId = await createBackup(guild, `Before Architect: ${session.title ?? session.mode}`, "pre-architect", actorId);
-    const result = await executePlan(guild, plan, { ...opts, actorId, onProgress: (d, t, op) => onProgress?.(d, t, op.description) });
+    const result = await executePlan(guild, plan, { ...opts, cleanMessages: opts.cleanMessages ?? true, actorId, onProgress: (d, t, op) => onProgress?.(d, t, op.description) });
     const status = result.completed.length === 0 && result.errors.length ? "failed" : "applied";
     await db.update(architectSessions).set({ status, backupId, result, plan, updatedAt: new Date() }).where(eq(architectSessions.id, session.id));
     await logChange({ guildId: guild.id, actorId, source: "architect", action: `architect.apply.${session.mode}`, target: session.id, after: { completed: result.completed.length, errors: result.errors.length, skipped: result.skipped.length } });

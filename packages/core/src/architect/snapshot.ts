@@ -20,6 +20,8 @@ export interface GuildSnapshot {
   id: string; name: string; iconUrl?: string | null; ownerId: string; memberCount: number;
   verificationLevel: number; botRoleId?: string | null; botHighestPosition?: number;
   roles: SnapshotRole[]; channels: SnapshotChannel[];
+  /** Other bot accounts in the server (MOTH itself excluded). */
+  bots?: { id: string; name: string; kickable: boolean }[];
   capturedAt: string;
 }
 
@@ -48,5 +50,6 @@ export function describeSnapshot(s: GuildSnapshot, maxChannels = 250): string {
     for (const c of byParent(cat.id)) { if (count++ < maxChannels) lines.push(fmt(c)); }
   }
   if (count > maxChannels) lines.push(`  …and ${count - maxChannels} more channels`);
+  if (s.bots?.length) lines.push(`Other bots: ${s.bots.map((b) => b.name).join(", ")}`);
   return lines.join("\n");
 }

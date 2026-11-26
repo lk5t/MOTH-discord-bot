@@ -13,6 +13,14 @@ import { automationSchema, generatedAutomationSchema, type AutomationDefinition 
  * 1–3B model running on a CPU.
  */
 
+const KNOWN = /^(user|target|server|channel)(\.[a-z]+)?$|^args\.[\w-]+$|^(random|randnum):|^(date|time|timestamp|level|xp|balance)$/;
+/** Keeps only real MOTH placeholders; "#{general}" → "#general", "{server}play.x.com" → "play.x.com". */
+export function sanitizePlaceholders(text: string): string {
+  return text
+    .replace(/\{(server|user)\}(?=[a-z0-9])/gi, "")
+    .replace(/\{([^{}\n]{1,40})\}/g, (m, k: string) => (KNOWN.test(k.trim()) ? m : k.trim()));
+}
+
 const slug = (s: string) => s.toLowerCase().replace(/^\//, "").replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "command";
 
 const simpleCommandSchema = z.object({
@@ -37,7 +45,7 @@ export async function generateCommand(ai: AIClient, request: string, serverConte
   // Only randomise when the request actually asks for it (small models add choices everywhere).
   const wantsRandom = /\b(random|randomly|pick|flip|roll|8.?ball|choose|either|chance|dice|coin)\b/i.test(request);
   const choices = wantsRandom ? [...new Set((s.choices ?? []).map((c) => c.replace(/[|{}]/g, "").trim()).filter(Boolean))] : [];
-  const reply = s.reply.replace(/\{(choices?|options?|answers?|random)\}/gi, "").replace(/[ \t]+$/gm, "").trim();
+  const reply = sanitizePlaceholders(s.reply).replace(/\{(choices?|options?|answers?|random)\}/gi, "").replace(/[ \t]+$/gm, "").trim();
   const content = choices.length > 1 ? `${reply}\n{random:${choices.join("|")}}`.trim() : reply || choices[0] || "Done!";
   // "when someone says X" → message trigger, even if the model forgot.
   const said = request.match(/\b(?:says?|types?|writes?|sends?|mentions?)\s+["'“]?([^"'”.,!?]{1,40})/i)?.[1]?.trim();
@@ -90,7 +98,7 @@ export async function generateAutomation(
   const trigger = s.when === "message" ? { type: "message", match: s.keyword ? "contains" : "any", pattern: s.keyword ?? "" }
     : s.when === "schedule" ? { type: "schedule", cron: s.cron && s.cron.trim().split(/\s+/).length === 5 ? s.cron.trim() : "0 12 * * *", timezone: "UTC" }
     : { type: s.when };
-  const message = { content: (s.message || "Hello {user}!").slice(0, 2000) };
+  const message = { content: sanitizePlaceholders(s.message || "Hello {user}!").slice(0, 2000) };
   let action: Record<string, unknown>;
   if (s.action === "add_role") {
     const roleId = s.role ? resolve.role(s.role) : null;

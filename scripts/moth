@@ -32,7 +32,8 @@ ${R}moth${Z} — manage your MOTH installation (${MOTH_DIR})
   ${B}status${Z}              Service status and health
   ${B}logs${Z} [service] [-f] Show logs (bot, dashboard, postgres, migrate, caddy)
   ${B}start${Z} | ${B}stop${Z} | ${B}restart${Z} [service]
-  ${B}update${Z} [version]    Upgrade to the latest (or a specific) release — config and data are kept
+  ${B}update${Z} [version]    Upgrade now to the latest (or a specific) version — config and data are kept
+  ${B}autoupdate${Z} [on|off]  Automatic updates (on by default, checked every 3 hours)
   ${B}backup${Z}              Dump the database to ${MOTH_DIR}/backups
   ${B}restore${Z} <file>      Restore a database dump (stops the bot during restore)
   ${B}config${Z}              Edit ${MOTH_DIR}/.env, then restart
@@ -45,6 +46,10 @@ EOF
 }
 
 cmd="${1:-help}"; shift || true
+# Updates replace this script on disk — run them from a private copy.
+if [[ "$cmd" =~ ^(update|upgrade)$ && -z "${MOTH_SELF_COPY:-}" ]]; then
+  self="$(mktemp)"; cp "$0" "$self"; MOTH_SELF_COPY="$self" MOTH_DIR="$MOTH_DIR" exec bash "$self" "$cmd" "$@"
+fi
 case "$cmd" in
   status|ps)
     dc ps --format "table {{.Service}}\t{{.State}}\t{{.Status}}"
@@ -60,11 +65,35 @@ case "$cmd" in
   restart) need_root "$cmd"; if [[ $# -gt 0 ]]; then dc restart "$@"; else dc up -d --remove-orphans && dc restart bot dashboard; fi ;;
   update|upgrade)
     need_root "$cmd"
+    auto=0; ver=""
+    for a in "$@"; do case "$a" in --auto) auto=1 ;; *) ver="$a" ;; esac; done
+    if [[ $auto == 1 ]]; then
+      exec >>/var/log/moth-update.log 2>&1
+      echo "── $(date -Is) checking for updates"
+      [[ "$(env_get MOTH_AUTO_UPDATE)" == 0 ]] && { echo "auto-update disabled"; exit 0; }
+      latest=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)
+      [[ -n "$latest" ]] || latest=$(curl -fsSL "https://api.github.com/repos/${REPO}/commits/main" 2>/dev/null | grep -m1 '"sha"' | cut -d'"' -f4 || true)
+      [[ -n "$latest" ]] || { echo "couldn't reach GitHub; will retry later"; exit 0; }
+      if [[ "$latest" == "$(env_get MOTH_INSTALLED_REF)" ]]; then echo "up to date (${latest:0:12})"; exit 0; fi
+      echo "updating $(env_get MOTH_INSTALLED_REF | cut -c1-12) → ${latest:0:12}"
+    fi
     echo "${B}Backing up the database first…${Z}"; "$0" backup
     tmp="$(mktemp)"; curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/install.sh" -o "$tmp"
-    MOTH_DIR="$MOTH_DIR" bash "$tmp" --unattended ${1:+--version "$1"}; rm -f -- "$tmp"
+    MOTH_DIR="$MOTH_DIR" bash "$tmp" --unattended ${ver:+--version "$ver"}; rm -f -- "$tmp"
+    # Reclaim disk from superseded images and old build cache.
     docker image prune -f >/dev/null 2>&1 || true
+    docker builder prune -f --filter until=72h >/dev/null 2>&1 || true
+    echo "${G}✓${Z} Update finished ($(date -Is))"
     ;;
+  autoupdate)
+    need_root "$cmd"
+    case "${1:-status}" in
+      on) env_set MOTH_AUTO_UPDATE 1; command -v systemctl >/dev/null && systemctl enable --now moth-update.timer >/dev/null 2>&1; echo "${G}✓${Z} Automatic updates on (every 3 hours)" ;;
+      off) env_set MOTH_AUTO_UPDATE 0; command -v systemctl >/dev/null && systemctl disable --now moth-update.timer >/dev/null 2>&1; rm -f /etc/cron.d/moth-update; echo "Automatic updates off" ;;
+      *) echo "Automatic updates: $([[ "$(env_get MOTH_AUTO_UPDATE)" == 0 ]] && echo off || echo on) · installed: $(env_get MOTH_INSTALLED_REF | cut -c1-12)"
+         command -v systemctl >/dev/null && systemctl list-timers moth-update.timer --no-pager 2>/dev/null | sed -n '1,2p'
+         [[ -f /var/log/moth-update.log ]] && { echo "Last checks:"; tail -n 5 /var/log/moth-update.log; } ;;
+    esac ;;
   backup)
     need_root "$cmd"
     mkdir -p backups
@@ -92,7 +121,7 @@ case "$cmd" in
     echo "OAuth redirect (add in Discord portal): $(env_get DASHBOARD_URL)/api/auth/callback"
     echo "Invite:     https://discord.com/oauth2/authorize?client_id=$(env_get DISCORD_CLIENT_ID)&permissions=8&scope=bot%20applications.commands"
     ;;
-  version) echo "MOTH $(env_get MOTH_VERSION) · $(docker compose version --short 2>/dev/null | sed 's/^/compose /')" ;;
+  version) echo "MOTH $(env_get MOTH_VERSION) · build $(env_get MOTH_INSTALLED_REF | cut -c1-12) · $(docker compose version --short 2>/dev/null | sed 's/^/compose /')" ;;
   doctor)
     ok() { echo "${G}✓${Z} $*"; }; bad() { echo "${R}✗${Z} $*"; }
     docker info >/dev/null 2>&1 && ok "Docker daemon running" || bad "Docker daemon not running"
@@ -143,7 +172,7 @@ case "$cmd" in
       local)
         need_root ai
         ram=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
-        def=llama3.2:1b; [[ $ram -ge 3800 ]] && def=llama3.2:3b; [[ $ram -ge 7500 ]] && def=llama3.1:8b
+        def=qwen2.5:1.5b; [[ $ram -ge 3800 ]] && def=qwen2.5:3b; [[ $ram -ge 7500 ]] && def=qwen2.5:7b; [[ $ram -ge 15000 ]] && def=qwen2.5:14b
         model="${1:-$def}"
         [[ $ram -lt 3800 ]] && echo "${Y}!${Z} ${ram} MB RAM: local AI will be slow and basic. An API key gives far better results."
         env_set AI_PROVIDER ollama; env_set AI_MODEL "$model"; env_set AI_BASE_URL http://ollama:11434/v1; env_set AI_API_KEY ""; env_set AI_TIMEOUT_MS 600000; env_set MOTH_LOCAL_AI 1
@@ -151,7 +180,9 @@ case "$cmd" in
         dc up -d ollama
         for _ in $(seq 1 30); do dc exec -T ollama ollama list >/dev/null 2>&1 && break; sleep 2; done
         echo "Downloading ${model} (one-time)…"
+        old="$(dc exec -T ollama ollama list 2>/dev/null | awk 'NR>1 {print $1}' | grep -vx "$model" || true)"
         dc exec -T ollama ollama pull "$model"
+        for o in $old; do dc exec -T ollama ollama rm "$o" >/dev/null 2>&1 || true; done   # free disk from older models
         dc up -d --force-recreate bot dashboard
         echo "${G}✓${Z} Free local AI enabled: $model (no API key needed)" ;;
       off)
@@ -167,7 +198,8 @@ case "$cmd" in
     read -r -p "Stop and remove MOTH containers? [y/N] " a </dev/tty; [[ "$a" =~ ^[Yy] ]] || exit 0
     read -r -p "Also DELETE the database and all data? Type DELETE to confirm, anything else keeps data: " d </dev/tty
     if [[ "$d" == "DELETE" ]]; then dc down -v; else dc down; fi
-    if command -v systemctl >/dev/null 2>&1; then systemctl disable --now moth.service >/dev/null 2>&1 || true; rm -f /etc/systemd/system/moth.service; systemctl daemon-reload || true; fi
+    if command -v systemctl >/dev/null 2>&1; then systemctl disable --now moth.service moth-update.timer >/dev/null 2>&1 || true; rm -f /etc/systemd/system/moth.service /etc/systemd/system/moth-update.service /etc/systemd/system/moth-update.timer; systemctl daemon-reload || true; fi
+    rm -f /etc/cron.d/moth-update
     echo "Containers removed. Files remain in $MOTH_DIR (backups included); delete that directory manually if you no longer need it."
     rm -f /usr/local/bin/moth
     ;;

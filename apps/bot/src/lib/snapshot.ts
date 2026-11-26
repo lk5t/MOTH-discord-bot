@@ -14,6 +14,9 @@ export function channelKind(c: GuildBasedChannel): SnapshotChannelType {
 export async function captureSnapshot(guild: Guild, activity?: Map<string, number>): Promise<GuildSnapshot> {
   await Promise.all([guild.roles.fetch(), guild.channels.fetch()]);
   const me = guild.members.me ?? (await guild.members.fetchMe());
+  // Other bots (needs the Server Members intent; on very large servers fall back to the cache).
+  const members = guild.memberCount <= 25_000 ? await guild.members.fetch().catch(() => guild.members.cache) : guild.members.cache;
+  const bots = [...members.values()].filter((m) => m.user.bot && m.id !== me.id).map((m) => ({ id: m.id, name: m.user.username, kickable: m.kickable }));
   return {
     id: guild.id, name: guild.name, iconUrl: guild.iconURL(), ownerId: guild.ownerId, memberCount: guild.memberCount,
     verificationLevel: guild.verificationLevel, botRoleId: me.roles.botRole?.id ?? null, botHighestPosition: me.roles.highest.position,
@@ -30,6 +33,7 @@ export async function captureSnapshot(guild: Guild, activity?: Map<string, numbe
         recentMessages: activity?.get(c.id),
       };
     }),
+    bots,
     capturedAt: new Date().toISOString(),
   };
 }

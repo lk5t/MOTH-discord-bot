@@ -130,6 +130,8 @@ export const blueprintSchema = z.object({
     channels: z.array(z.string()).default([]),
     categories: z.array(z.string()).default([]),
     roles: z.array(z.string()).default([]),
+    /** Other bots to remove from the server (by name or ID). */
+    bots: z.array(z.string()).default([]),
   }).prefault({}),
 });
 export type Blueprint = z.infer<typeof blueprintSchema>;
