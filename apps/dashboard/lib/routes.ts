@@ -11,7 +11,8 @@ import {
 } from "@moth/core";
 import { ApiError, body, json, requireLevel, type GuildCtx } from "./api";
 import { bot } from "./bot";
-import { invalidateAccess, isPlatformOwner } from "./access";
+import { atLeast, guildAccess, invalidateAccess, isPlatformOwner } from "./access";
+import { inviteUrl } from "./discord";
 
 type Handler = (ctx: GuildCtx) => Promise<Response>;
 type Route = { method: string; path: string; handler: Handler };
@@ -281,12 +282,58 @@ r("GET", "member-backup", async (ctx) => {
 r("POST", "member-backup/pull", async (ctx) => {
   requireLevel(ctx, "admin");
   const b = await body(ctx.req, z.object({ sourceGuildId: z.string().regex(/^\d{15,22}$/) }));
-  const [src] = await db().select().from(guilds).where(eq(guilds.id, b.sourceGuildId));
-  const allowed = isPlatformOwner(ctx.userId) || src?.ownerId === ctx.userId || (b.sourceGuildId === ctx.guildId && ctx.level === "owner");
-  if (!allowed) throw new ApiError(403, "Only the owner of the backed-up server can restore its members");
+  if (!(await canRestoreFrom(ctx, b.sourceGuildId))) throw new ApiError(403, "Only the owner of the backed-up server can restore its members");
   const out = await bot(`/guilds/${ctx.guildId}/member-pull`, { body: { sourceGuildId: b.sourceGuildId } });
   await audit(ctx, "member-backup.pull", b.sourceGuildId);
   return json(out);
+});
+/** Who may restore a server's backed-up members: its owner (or a platform owner). */
+async function canRestoreFrom(ctx: GuildCtx, sourceGuildId: string) {
+  const [src] = await db().select().from(guilds).where(eq(guilds.id, sourceGuildId));
+  return isPlatformOwner(ctx.userId) || src?.ownerId === ctx.userId || (sourceGuildId === ctx.guildId && ctx.level === "owner");
+}
+function inviteCode(input: string): string | null {
+  const m = input.trim().match(/^(?:https?:\/\/)?(?:www\.)?(?:discord(?:app)?\.com\/invite|discord\.gg)\/([\w-]{2,32})\/?(?:\?.*)?$/i) ?? input.trim().match(/^([\w-]{2,32})$/);
+  return m?.[1] ?? null;
+}
+/** Looks up the server an invite link points to, and whether MOTH is in it. */
+r("POST", "member-backup/resolve-invite", async (ctx) => {
+  requireLevel(ctx, "admin");
+  const b = await body(ctx.req, z.object({ invite: z.string().min(2).max(200) }));
+  const code = inviteCode(b.invite);
+  if (!code) throw new ApiError(400, "That doesn't look like a Discord invite link (e.g. https://discord.gg/abc123).");
+  const res = await fetch(`https://discord.com/api/v10/invites/${encodeURIComponent(code)}?with_counts=true`, { cache: "no-store" });
+  if (res.status === 404) throw new ApiError(404, "That invite is invalid or has expired.");
+  if (!res.ok) throw new ApiError(502, `Discord couldn't look up that invite (${res.status}).`);
+  const inv = (await res.json()) as { guild?: { id: string; name: string; icon: string | null }; approximate_member_count?: number };
+  if (!inv.guild) throw new ApiError(400, "That invite isn't for a server.");
+  const [row] = await db().select().from(guilds).where(eq(guilds.id, inv.guild.id));
+  const botPresent = !!row?.active;
+  if (botPresent) invalidateAccess(inv.guild.id);
+  const level = botPresent ? await guildAccess(ctx.session, inv.guild.id) : "none";
+  return json({
+    guild: { id: inv.guild.id, name: inv.guild.name, iconUrl: inv.guild.icon ? `https://cdn.discordapp.com/icons/${inv.guild.id}/${inv.guild.icon}.png?size=64` : null, memberCount: inv.approximate_member_count ?? null },
+    botPresent, canManage: atLeast(level, "admin"), addBotUrl: inviteUrl(inv.guild.id),
+  });
+});
+r("POST", "member-backup/pull-to", async (ctx) => {
+  requireLevel(ctx, "admin");
+  const b = await body(ctx.req, z.object({ targetGuildId: z.string().regex(/^\d{15,22}$/), sourceGuildId: z.string().regex(/^\d{15,22}$/) }));
+  if (!(await canRestoreFrom(ctx, b.sourceGuildId))) throw new ApiError(403, "Only the owner of the backed-up server can restore its members");
+  const [target] = await db().select().from(guilds).where(eq(guilds.id, b.targetGuildId));
+  if (!target?.active) throw new ApiError(409, "Add MOTH to that server first.");
+  invalidateAccess(b.targetGuildId);
+  if (!atLeast(await guildAccess(ctx.session, b.targetGuildId), "admin")) throw new ApiError(403, "You need Manage Server in the server you're pulling members into.");
+  const out = await bot(`/guilds/${b.targetGuildId}/member-pull`, { body: { sourceGuildId: b.sourceGuildId } });
+  await audit(ctx, "member-backup.pull", `${b.sourceGuildId} → ${b.targetGuildId}`);
+  return json(out);
+});
+r("GET", "member-backup/pull-status", async (ctx) => {
+  requireLevel(ctx, "admin");
+  const target = ctx.query.get("target") ?? "";
+  if (!/^\d{15,22}$/.test(target)) throw new ApiError(400, "Missing target");
+  if (!atLeast(await guildAccess(ctx.session, target), "admin")) throw new ApiError(403, "No access to that server");
+  return json(await bot(`/guilds/${target}/member-pull`));
 });
 r("DELETE", "member-backup", async (ctx) => {
   requireLevel(ctx, "owner");

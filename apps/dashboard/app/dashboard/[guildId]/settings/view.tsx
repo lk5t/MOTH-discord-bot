@@ -3,7 +3,7 @@ import { useState } from "react";
 import { ACHIEVEMENTS } from "@moth/core/shared";
 import { useGuild, useGuildConfig } from "@/components/guild";
 import { api, fmtDate, timeAgo, useApi } from "@/components/hooks";
-import { Button, Card, Chip, Empty, Field, Input, NumberInput, PageHead, SaveBar, Select, Skeleton, Tabs, ToggleRow, useConfirm, useToast } from "@/components/ui";
+import { Button, Card, Chip, Empty, Field, Input, NumberInput, PageHead, Progress, SaveBar, Select, Skeleton, Tabs, ToggleRow, useConfirm, useToast } from "@/components/ui";
 import { ChannelMulti, ChannelSelect, RoleMulti, RoleSelect, useNames } from "@/components/pickers";
 import { I } from "@/components/icons";
 
@@ -169,7 +169,8 @@ function MemberBackup() {
     catch (e) { toast((e as Error).message, true); } finally { setBusy(false); }
   }
   const st = q.data?.status;
-  return <div className="grid g2">
+  return <><PullByInvite sources={q.data?.sources ?? []} canPull={!!q.data?.canPull} />
+  <div className="grid g2">
     <Card accent title="Member backup" subtitle="When members verify with Discord sign-in they allow MOTH to “join servers for you”. If this server is ever nuked, deleted or you move, you can pull them into the new server in one click.">
       {!q.data ? <Skeleton h={120} /> : <div className="stack">
         <div className="row between"><span className="muted">Members backed up here</span><b style={{ fontSize: 22 }}>{q.data.here.active.toLocaleString()}</b></div>
@@ -192,5 +193,59 @@ function MemberBackup() {
           </div>)}
       </>}
     </Card>
-  </div>;
+  </div></>;
+}
+
+type Resolved = { guild: { id: string; name: string; iconUrl: string | null; memberCount: number | null }; botPresent: boolean; canManage: boolean; addBotUrl: string };
+function PullByInvite({ sources, canPull }: { sources: MB["sources"]; canPull: boolean }) {
+  const { guildId } = useGuild();
+  const toast = useToast(); const confirm = useConfirm();
+  const [invite, setInvite] = useState("");
+  const [found, setFound] = useState<Resolved | null>(null);
+  const [source, setSource] = useState<string>("");
+  const [busy, setBusy] = useState<"look" | "pull" | null>(null);
+  const restorable = sources.filter((x) => x.restorable > 0);
+  const src = restorable.find((x) => x.id === source) ?? restorable[0];
+  const status = useApi<{ status: PullStatus | null }>(found?.botPresent && found.canManage ? `/api/guilds/${guildId}/member-backup/pull-status?target=${found.guild.id}` : null, { refreshMs: 3_000 });
+  async function lookUp() {
+    setBusy("look");
+    try { setFound(await api<Resolved>(`/api/guilds/${guildId}/member-backup/resolve-invite`, { body: { invite } })); }
+    catch (e) { setFound(null); toast((e as Error).message, true); } finally { setBusy(null); }
+  }
+  async function pull() {
+    if (!found || !src) return;
+    if (!(await confirm({ title: `Pull members into ${found.guild.name}?`, confirm: "Pull members", body: <>MOTH adds up to <b>{src.restorable.toLocaleString()}</b> members backed up from <b>{src.name}</b> to <b>{found.guild.name}</b>. Members already there are skipped. It runs in the background at about 4 members per second.</> }))) return;
+    setBusy("pull");
+    try { await api(`/api/guilds/${guildId}/member-backup/pull-to`, { body: { targetGuildId: found.guild.id, sourceGuildId: src.id } }); toast("Pull started"); void status.reload(); }
+    catch (e) { toast((e as Error).message, true); } finally { setBusy(null); }
+  }
+  const st = status.data?.status;
+  const pct = st && st.total ? Math.round(((st.added + st.already + st.failed + st.revoked) / st.total) * 100) : 0;
+  return <Card accent className="mb" title="Pull members into a server" subtitle="Paste an invite link to any server — a brand-new one after a nuke, or this one — and MOTH brings your backed-up members there.">
+    {!canPull ? <Empty title="Only the server owner can pull members" /> : !restorable.length ? <Empty title="No backed-up members yet">Turn on Verify with Discord (Security → Verification) — members are backed up as they verify.</Empty> : <div className="stack">
+      <div className="row wrap"><div className="grow" style={{ minWidth: 240 }}><Input placeholder="https://discord.gg/your-invite" value={invite} onChange={(e) => { setInvite(e.target.value); setFound(null); }} onKeyDown={(e) => e.key === "Enter" && invite.trim() && lookUp()} /></div>
+        <Button onClick={lookUp} loading={busy === "look"} disabled={!invite.trim()}>Find server</Button></div>
+      {found && <div className="card flat">
+        <div className="row">
+          {found.guild.iconUrl ? <img src={found.guild.iconUrl} alt="" width={40} height={40} style={{ borderRadius: 10 }} /> : <div className="brand-mark" style={{ width: 40, height: 40 }} />}
+          <div className="grow"><b>{found.guild.name}</b><div className="small faint">{found.guild.memberCount != null ? `${found.guild.memberCount.toLocaleString()} members` : ""}</div></div>
+          {found.botPresent ? <Chip tone="ok">MOTH is here</Chip> : <Chip tone="warn">MOTH not added yet</Chip>}
+        </div>
+        {!found.botPresent ? <div className="row mt wrap"><span className="small muted grow">Step 1: add MOTH to {found.guild.name} (it needs to be in the server to pull members in).</span>
+          <a className="btn primary sm" href={found.addBotUrl} target="_blank" rel="noreferrer">Add MOTH to {found.guild.name}</a><Button size="sm" onClick={lookUp} loading={busy === "look"}>I've added it — check again</Button></div>
+        : !found.canManage ? <div className="small mt" style={{ color: "#f59e0b" }}>You need Manage Server in {found.guild.name} to pull members into it.</div>
+        : <div className="stack mt">
+          <div className="row wrap"><span className="small muted">Pull members backed up from</span>
+            <select className="select" style={{ width: "auto" }} value={src?.id ?? ""} onChange={(e) => setSource(e.target.value)}>{restorable.map((x) => <option key={x.id} value={x.id}>{x.name}{!x.active ? " (gone)" : ""} — {x.restorable.toLocaleString()} members</option>)}</select>
+            <Button variant="primary" onClick={pull} loading={busy === "pull"} disabled={!!st?.running}>Pull members</Button></div>
+          {st && <div>
+            <div className="row between small"><b>{st.running ? "Pulling members…" : st.error ? "Stopped" : "Finished"}</b><span className="faint">{st.running ? `${pct}%` : timeAgo(st.finishedAt ?? st.startedAt)}</span></div>
+            <div className="mt"><Progress value={st.running ? pct : 100} /></div>
+            <div className="row wrap mt"><Chip tone="ok">{st.added} added</Chip><Chip>{st.already} already there</Chip>{!!st.revoked && <Chip tone="warn">{st.revoked} withdrew access</Chip>}{!!st.failed && <Chip tone="crim">{st.failed} failed</Chip>}<span className="small faint">of {st.total}</span></div>
+            {st.error && <div className="small mt" style={{ color: "#ff6b85" }}>{st.error}</div>}
+          </div>}
+        </div>}
+      </div>}
+    </div>}
+  </Card>;
 }
