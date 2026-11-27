@@ -22,6 +22,7 @@ import { getGuildConfig } from "@moth/core";
 import * as serverLogs from "./modules/serverLogs.js";
 import { loadTempVoice, onTempVoiceDeleted, onTempVoiceState } from "./modules/tempVoice.js";
 import { handleSuggestionMessage } from "./modules/suggestions.js";
+import { dehoist, rememberRoles, restoreRoles, scheduleAutopilot, welcomeNewGuild } from "./modules/autopilot.js";
 import { onStarboardReaction } from "./modules/starboard.js";
 import { applyChannelRules, handleSticky, refreshStickies, updateStatsChannels } from "./modules/channelTools.js";
 
@@ -76,7 +77,7 @@ client.once(Events.ClientReady, async (c) => {
   log.info("MOTH is ready");
 });
 
-client.on(Events.GuildCreate, async (g) => { await register(g); void serverLogs.cacheInvites(g); await syncGuildCommands(g); await startScheduledAutomations([g.id]); log.info({ guild: g.id, name: g.name }, "joined guild"); });
+client.on(Events.GuildCreate, async (g) => { await register(g); void serverLogs.cacheInvites(g); void welcomeNewGuild(g).catch(() => undefined); await syncGuildCommands(g); await startScheduledAutomations([g.id]); log.info({ guild: g.id, name: g.name }, "joined guild"); });
 client.on(Events.GuildDelete, async (g) => { await getDb().update(guilds).set({ active: false, leftAt: new Date() }).where(eq(guilds.id, g.id)); log.info({ guild: g.id }, "left guild"); });
 client.on(Events.GuildUpdate, (_o, g) => void register(g));
 client.on(Events.InteractionCreate, (i) => void handleInteraction(i));
@@ -109,6 +110,8 @@ client.on(Events.MessageUpdate, async (old, message) => {
 });
 client.on(Events.MessageDelete, (message) => {
   serverLogs.logMessageDelete(message);
+  // One of MOTH's panels may have been deleted — Autopilot re-posts it.
+  if (message.inGuild() && message.author?.id === client.user?.id && message.components?.length) scheduleAutopilot(message.guild, "a MOTH panel was deleted", 30_000);
   if (message.inGuild() && !message.author?.bot) void fireAutomations(message.guild, "message_delete", { member: message.member, user: message.author, channel: message.channel, text: message.content ?? "" });
 });
 client.on(Events.MessageBulkDelete, (messages, channel) => serverLogs.logBulkDelete(messages, channel));
@@ -127,12 +130,15 @@ client.on(Events.GuildMemberAdd, async (member) => {
   const invite = await serverLogs.resolveJoinInvite(member).catch(() => null);
   serverLogs.logMemberJoin(member, invite);
   await onJoin(member).catch((err) => log.warn({ err }, "welcome failed"));
+  await restoreRoles(member).catch(() => undefined);
+  void dehoist(member);
   void fireAutomations(member.guild, "member_join", { member, user: member.user, invite });
   void publishEvent("member.joined", member.guild.id, { userId: member.id, memberCount: member.guild.memberCount });
 });
 client.on(Events.GuildMemberRemove, async (member) => {
   analytics.leave(member.guild.id);
   await onLeave(member).catch(() => undefined);
+  void rememberRoles(member);
   serverLogs.logMemberLeave(member);
   void serverLogs.markInviteLeft(member.guild.id, member.id);
   void fireAutomations(member.guild, "member_leave", { user: member.user });
@@ -140,6 +146,7 @@ client.on(Events.GuildMemberRemove, async (member) => {
 });
 client.on(Events.GuildMemberUpdate, (oldM, newM) => {
   serverLogs.logMemberUpdate(oldM, newM);
+  if (oldM.displayName !== newM.displayName) void dehoist(newM);
   if (oldM.partial) return;
   for (const r of newM.roles.cache.keys()) if (!oldM.roles.cache.has(r)) void fireAutomations(newM.guild, "role_added", { member: newM, roleId: r });
   for (const r of oldM.roles.cache.keys()) if (!newM.roles.cache.has(r)) void fireAutomations(newM.guild, "role_removed", { member: newM, roleId: r });
@@ -184,12 +191,16 @@ client.on(Events.VoiceStateUpdate, async (oldS, newS) => {
 client.on(Events.ChannelDelete, (ch) => {
   void onTempVoiceDeleted(ch.id);
   serverLogs.logChannel(ch, "deleted");
+  if ("guild" in ch && ch.guild) scheduleAutopilot(ch.guild, `#${"name" in ch ? ch.name : "channel"} was deleted`);
   if ("guild" in ch && ch.guild) void trackDestructive(ch.guild, "channel", AuditLogEvent.ChannelDelete);
 });
 client.on(Events.GuildRoleDelete, (role) => { serverLogs.logRole(role, "deleted"); void trackDestructive(role.guild, "role", AuditLogEvent.RoleDelete); });
 client.on(Events.GuildBanAdd, (ban) => { serverLogs.logBan(ban, true); void trackDestructive(ban.guild, "ban", AuditLogEvent.MemberBanAdd); });
 client.on(Events.GuildBanRemove, (ban) => serverLogs.logBan(ban, false));
-client.on(Events.ChannelCreate, (ch) => serverLogs.logChannel(ch, "created"));
+client.on(Events.ChannelCreate, (ch) => {
+  serverLogs.logChannel(ch, "created");
+  if ("guild" in ch && ch.guild) scheduleAutopilot(ch.guild, `#${ch.name} was created`);
+});
 client.on(Events.ChannelUpdate, (a, b) => serverLogs.logChannelUpdate(a, b));
 client.on(Events.GuildRoleCreate, (role) => serverLogs.logRole(role, "created"));
 client.on(Events.GuildRoleUpdate, (a, b) => serverLogs.logRoleUpdate(a, b));

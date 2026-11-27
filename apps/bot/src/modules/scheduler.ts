@@ -10,6 +10,7 @@ import { autoCloseInactive } from "./tickets.js";
 import { createBackup, pruneBackups } from "./backups.js";
 import { resumeAutomation } from "./automation.js";
 import { updateStatsChannels } from "./channelTools.js";
+import { autopilotSweep, pruneSavedRoles } from "./autopilot.js";
 
 /** Durable job runner (jobs live in Postgres, so they survive restarts) + periodic maintenance. */
 async function runDueJobs() {
@@ -48,6 +49,8 @@ export function startScheduler(): void {
     new Cron("*/30 * * * * *", { protect: true }, safe("giveaways+polls", async () => { await endDueGiveaways(); await endDuePolls(); })),
     new Cron("15 * * * * *", { protect: true }, safe("raid-recovery", async () => runtime.client && recoverExpiredRaids(runtime.client.guilds.cache))),
     new Cron("*/10 * * * *", { protect: true }, safe("stats-channels", () => updateStatsChannels())),
+    new Cron("7,37 * * * *", { protect: true }, safe("autopilot", autopilotSweep)),
+    new Cron("41 4 * * *", { protect: true }, safe("saved-roles", pruneSavedRoles)),
     new Cron("*/5 * * * *", { protect: true }, safe("maintenance", async () => {
       await expireTimeoutCases();
       await getDb().delete(dashboardSessions).where(lte(dashboardSessions.expiresAt, new Date()));

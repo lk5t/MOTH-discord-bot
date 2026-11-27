@@ -61,3 +61,41 @@ export function organiseBlueprint(bp: Blueprint): Blueprint {
     categories: stable(bp.categories, (c) => categoryRank(c.name, c.channels)).map((c) => ({ ...c, channels: organiseChannels(c.channels) })),
   };
 }
+
+/** Snowflake order (numeric, not string). */
+export const idCmp = (a: string, b: string) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0);
+
+export type LayoutChannel = { id: string; kind: "category" | "text" | "voice"; parentId: string | null; position: number };
+export type LayoutPosition = { channel: string; position: number; parent?: string | null };
+
+/**
+ * Computes a unique position for EVERY channel so Discord shows exactly the
+ * requested order (Discord breaks position ties by ID, so partial updates
+ * scramble). Categories follow `order`, then untouched ones; inside each
+ * parent, listed channels come first, then the rest in their current order;
+ * text-type channels before voice (as Discord displays them).
+ */
+export function layoutPositions(channels: LayoutChannel[], order: { id: string; parent: string | null }[]): LayoutPosition[] {
+  const byId = new Map(channels.map((c) => [c.id, c]));
+  const sortPos = (a: LayoutChannel, b: LayoutChannel) => a.position - b.position || idCmp(a.id, b.id);
+  const parentOf = new Map(order.filter((o) => byId.has(o.id)).map((o) => [o.id, o.parent]));
+  const listedCats = order.map((o) => byId.get(o.id)).filter((c): c is LayoutChannel => !!c && c.kind === "category");
+  const catOrder = [...new Set([...listedCats, ...channels.filter((c) => c.kind === "category").sort(sortPos)])];
+  const out: LayoutPosition[] = catOrder.map((c, i) => ({ channel: c.id, position: i }));
+  for (const parent of [null, ...catOrder.map((c) => c.id)]) {
+    const target = (c: LayoutChannel) => (parentOf.has(c.id) ? parentOf.get(c.id)! : c.parentId);
+    const children = channels.filter((c) => c.kind !== "category" && target(c) === parent);
+    const listed = order.filter((o) => o.parent === parent).map((o) => byId.get(o.id)).filter((c): c is LayoutChannel => !!c && c.kind !== "category");
+    const ordered = [...listed, ...children.filter((c) => !listed.includes(c)).sort(sortPos)];
+    const final = [...ordered.filter((c) => c.kind === "text"), ...ordered.filter((c) => c.kind === "voice")];
+    final.forEach((c, i) => out.push({ channel: c.id, position: i, ...(c.parentId !== parent ? { parent } : {}) }));
+  }
+  return out;
+}
+
+/** How Discord displays a server: categories by position (ties by ID), text above voice inside each. */
+export function displayOrder(channels: LayoutChannel[]): string[] {
+  const sortPos = (a: LayoutChannel, b: LayoutChannel) => a.position - b.position || idCmp(a.id, b.id);
+  const kids = (p: string | null) => [...channels.filter((c) => c.kind === "text" && c.parentId === p).sort(sortPos), ...channels.filter((c) => c.kind === "voice" && c.parentId === p).sort(sortPos)];
+  return [...kids(null).map((c) => c.id), ...channels.filter((c) => c.kind === "category").sort(sortPos).flatMap((c) => [c.id, ...kids(c.id).map((k) => k.id)])];
+}

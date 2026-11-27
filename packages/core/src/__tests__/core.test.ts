@@ -293,3 +293,32 @@ test("verification hides every channel except #verify from unverified members", 
   const old = ow((o) => o.kind === "channel.update" && o.channelId === "300000000000000009");
   assert.equal(view(old, "@everyone"), "deny");
 });
+
+test("layout positions make Discord show exactly the requested order", async () => {
+  const { layoutPositions, displayOrder } = await import("../architect/organise.js");
+  // A messy server: duplicate positions everywhere (what Discord leaves after channels are created).
+  type C = { id: string; kind: "category" | "text" | "voice"; parentId: string | null; position: number };
+  const ch: C[] = [
+    { id: "900000000000000010", kind: "category", parentId: null, position: 0 }, // Community
+    { id: "900000000000000011", kind: "category", parentId: null, position: 0 }, // Start Here (created later, same position)
+    { id: "900000000000000012", kind: "category", parentId: null, position: 1 }, // Staff
+    { id: "900000000000000020", kind: "text", parentId: "900000000000000011", position: 0 }, // roles
+    { id: "900000000000000021", kind: "text", parentId: "900000000000000011", position: 0 }, // rules
+    { id: "900000000000000022", kind: "text", parentId: "900000000000000011", position: 0 }, // welcome
+    { id: "900000000000000023", kind: "voice", parentId: "900000000000000010", position: 0 },
+    { id: "900000000000000024", kind: "text", parentId: "900000000000000010", position: 5 }, // general
+    { id: "90000000000000025", kind: "text", parentId: "900000000000000010", position: 5 },  // shorter (older) id, same position
+  ];
+  const order = [
+    { id: "900000000000000011", parent: null }, { id: "900000000000000022", parent: "900000000000000011" }, { id: "900000000000000021", parent: "900000000000000011" }, { id: "900000000000000020", parent: "900000000000000011" },
+    { id: "900000000000000010", parent: null }, { id: "900000000000000024", parent: "900000000000000010" },
+  ];
+  const pos = layoutPositions(ch, order);
+  const applied = ch.map((c) => { const p = pos.find((x) => x.channel === c.id)!; return { ...c, position: p.position, parentId: p.parent !== undefined ? p.parent : c.parentId }; });
+  assert.deepEqual(displayOrder(applied), [
+    "900000000000000011", "900000000000000022", "900000000000000021", "900000000000000020",
+    "900000000000000010", "900000000000000024", "90000000000000025", "900000000000000023",
+    "900000000000000012",
+  ]);
+  assert.equal(new Set(pos.map((p) => p.channel)).size, ch.length, "every channel gets a position");
+});

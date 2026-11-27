@@ -27,18 +27,22 @@ function summarise(r: SetupResult, dry: boolean): string {
   return lines.join("\n").slice(0, 4000);
 }
 
+async function setupIntro(guildId: string) {
+  const cfg = await getGuildConfig(guildId);
+  const recs = setupRecommendations(cfg);
+  const icon = { high: "🔴", medium: "🟠", low: "⚪" };
+  const e = brandEmbed("⚡ Quick setup", "Pick one or more packs. MOTH reuses channels and roles you already have, creates only what's missing, and takes a backup first.")
+    .addFields({ name: recs.length ? "Recommended for this server" : "Looking good", value: recs.length ? recs.slice(0, 8).map((r) => `${icon[r.severity]} **${r.title}** — ${r.detail}`).join("\n") : "Everything essential is already set up. ✨" });
+  return { embeds: [e], components: [setupMenu([...new Set(recs.filter((r) => r.severity !== "low").map((r) => r.pack))])] };
+}
+
 export const toolCommands: SlashCommand[] = [
   {
     data: new SlashCommandBuilder().setName("setup").setDescription("One-click setup: logs, protection, welcome, tickets, voice rooms and more")
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false).toJSON(),
     access: "admin",
     async execute(i) {
-      const cfg = await getGuildConfig(i.guildId);
-      const recs = setupRecommendations(cfg);
-      const icon = { high: "🔴", medium: "🟠", low: "⚪" };
-      const e = brandEmbed("⚡ Quick setup", "Pick one or more packs. MOTH reuses channels and roles you already have, creates only what's missing, and takes a backup first.")
-        .addFields({ name: recs.length ? "Recommended for this server" : "Looking good", value: recs.length ? recs.slice(0, 8).map((r) => `${icon[r.severity]} **${r.title}** — ${r.detail}`).join("\n") : "Everything essential is already set up. ✨" });
-      await i.reply({ embeds: [e], components: [setupMenu([...new Set(recs.filter((r) => r.severity !== "low").map((r) => r.pack))])], ephemeral: true });
+      await i.reply({ ...(await setupIntro(i.guildId)), ephemeral: true });
     },
   },
   {
@@ -88,6 +92,7 @@ export const setupComponents: ComponentHandler = {
   prefix: "setup",
   async handle(i, [action, packs]) {
     if (!(await hasAccess(i.member, "admin"))) return i.reply({ embeds: [fail("You need admin access to run setup.")], ephemeral: true });
+    if (action === "open" && i.isButton()) return i.reply({ ...(await setupIntro(i.guildId)), ephemeral: true });
     if (action === "pick" && i.isStringSelectMenu()) {
       await i.deferUpdate();
       const preview = await runSetup(i.guild, i.values, { dry: true });

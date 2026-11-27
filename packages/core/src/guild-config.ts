@@ -219,6 +219,23 @@ export const guildConfigSchema = z.object({
     supportAutoReply: z.boolean().default(false),
   }).prefault({}),
 
+  /** Hands-free maintenance: keeps the server organised, locked and repaired without anyone pressing buttons. */
+  autopilot: z.object({
+    enabled: z.boolean().default(true),
+    /** Keep categories (Start Here first … staff last) and channels in order, including ones added later. */
+    organiseLayout: z.boolean().default(true),
+    /** With verification on, new channels are hidden from unverified members automatically. */
+    gateNewChannels: z.boolean().default(true),
+    /** Re-post deleted verification/ticket/role-menu panels, recreate deleted log channels, drop dead config. */
+    repair: z.boolean().default(true),
+    /** Give members their roles back when they leave and rejoin (never admin/mod-level roles). */
+    restoreRoles: z.boolean().default(true),
+    /** Strip characters people use to hoist themselves to the top of the member list (e.g. "!!!name"). */
+    dehoist: z.boolean().default(false),
+    /** Post a one-click setup prompt when MOTH joins a server. */
+    setupPrompt: z.boolean().default(true),
+  }).prefault({}),
+
   /** Server event logs (message edits/deletes, members, roles, channels, voice, invites). */
   logging: z.object({
     enabled: z.boolean().default(false),

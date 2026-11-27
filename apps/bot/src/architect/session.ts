@@ -2,7 +2,7 @@ import type { Guild } from "discord.js";
 import { and, desc, eq, gte, sql } from "drizzle-orm";
 import {
   analyzeServer, architectSessions, blueprintFromBrief, blueprintFromEditBrief, compactOutline, architectSystemPrompt, architectTurnSchema, blueprintSchema, buildPlan, builtinTemplate, channelActivity, configBackups,
-  describeSnapshot, designFromPrompt, getDb, getGuildConfig, improveTurnSchema, inferIntent, composeBlueprint, logChange, looksFresh, publishEvent,
+  describeSnapshot, designFromPrompt, organiseBlueprint, getDb, getGuildConfig, improveTurnSchema, inferIntent, composeBlueprint, logChange, looksFresh, publishEvent,
   recordAIUsage, resolveAIClient, normaliseName,
   type ArchitectMode, type ArchitectPlan, type Blueprint, type BlueprintInput, type ChatMessage, type GuildSnapshot, type ServerAnalysis,
 } from "@moth/core";
@@ -206,6 +206,8 @@ export async function architectTurn(guild: Guild, session: Session, userMessage:
     }
   }
 
+  // Store the organised version so the dashboard preview matches what Discord will show.
+  if (blueprint) blueprint = organiseBlueprint(blueprint);
   const plan = blueprint ? planFor(snap, guild, mode, blueprint) : null;
   const now = new Date().toISOString();
   const messages = [...history, { role: "user" as const, content: userMessage, at: now }, { role: "assistant" as const, content: reply, at: now }];
@@ -233,7 +235,7 @@ export async function createSession(guild: Guild, userId: string, mode: Architec
 
 /** Starts a session from an existing blueprint (saved templates). */
 export async function createSessionFromBlueprint(guild: Guild, userId: string, blueprintInput: unknown, title: string): Promise<Session> {
-  const blueprint = blueprintSchema.parse(blueprintInput);
+  const blueprint = organiseBlueprint(blueprintSchema.parse(blueprintInput));
   const plan = planFor(await snapshotFor(guild), guild, "create", blueprint);
   const now = new Date().toISOString();
   const [s] = await getDb().insert(architectSessions).values({ guildId: guild.id, userId, mode: "create", title, blueprint, plan, messages: [{ role: "assistant", content: `Loaded the **${title}** blueprint. Tell me what to change, or approve it to build.`, at: now }] }).returning();

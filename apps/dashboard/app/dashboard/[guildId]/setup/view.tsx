@@ -3,8 +3,8 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { SETUP_PACKS, setupRecommendations } from "@moth/core/shared";
 import { useGuild, useGuildConfig } from "@/components/guild";
-import { api } from "@/components/hooks";
-import { Button, Card, Chip, Empty, PageHead, Skeleton, useConfirm, useToast } from "@/components/ui";
+import { api, timeAgo, useApi } from "@/components/hooks";
+import { Button, Card, Chip, Empty, PageHead, SaveBar, Skeleton, Switch, ToggleRow, useConfirm, useToast } from "@/components/ui";
 import { I } from "@/components/icons";
 
 type Item = { pack: string; kind: string; name: string; action: "create" | "reuse" | "configure" | "publish" };
@@ -42,6 +42,7 @@ export function SetupView() {
   return (
     <>
       <PageHead title="Quick Setup" description="Set up a complete, well-protected server in one click. MOTH reuses your existing channels and roles and only creates what's missing." />
+      <Autopilot />
       <Card accent title="Health check" subtitle="What this server is missing, most important first." className="mb">
         {!cfg.config ? <Skeleton h={120} /> : !recs.length ? <Empty icon={<I.check />} title="Everything essential is set up">Fine-tune individual features in Server Tools.</Empty> : (
           <div className="stack" style={{ gap: 4 }}>{recs.map((r) => {
@@ -83,4 +84,37 @@ export function SetupView() {
       </Card>}
     </>
   );
+}
+
+type Report = { at: string; reason: string; actions: string[] };
+function Autopilot() {
+  const { guildId } = useGuild();
+  const cfg = useGuildConfig();
+  const toast = useToast();
+  const q = useApi<{ last: Report | null }>(`/api/guilds/${guildId}/autopilot`, { refreshMs: 30_000 });
+  const [busy, setBusy] = useState(false);
+  if (!cfg.config) return <Skeleton h={160} />;
+  const a = cfg.config.autopilot;
+  const set = (p: Partial<typeof a>) => cfg.update("autopilot", p);
+  async function runNow() {
+    setBusy(true);
+    try { const r = await api<Report>(`/api/guilds/${guildId}/autopilot/run`, { body: {} }); toast(r.actions.length ? `Autopilot made ${r.actions.length} fix(es)` : "Everything already in order"); void q.reload(); }
+    catch (e) { toast((e as Error).message, true); } finally { setBusy(false); }
+  }
+  const last = q.data?.last;
+  return <Card className="mb" title="🤖 Autopilot" subtitle="Keeps your server organised, locked and repaired on its own — a few seconds after anything changes, and every 30 minutes." actions={<><Button size="sm" onClick={runNow} loading={busy}>Run now</Button><Switch checked={a.enabled} onChange={(v) => set({ enabled: v })} /></>}>
+    <div className="grid g2">
+      <div>
+        <ToggleRow title="Keep the layout organised" description="Start Here first, staff and archive last; welcome → rules → info → roles at the top of each category — also for channels added later" checked={a.organiseLayout} onChange={(v) => set({ organiseLayout: v })} disabled={!a.enabled} />
+        <ToggleRow title="Lock new channels behind verification" description="When verification is on, every new channel is hidden from unverified members" checked={a.gateNewChannels} onChange={(v) => set({ gateNewChannels: v })} disabled={!a.enabled} />
+        <ToggleRow title="Self-repair" description="Re-post deleted verification, ticket and role-menu panels; recreate deleted log channels; clean up settings for deleted channels" checked={a.repair} onChange={(v) => set({ repair: v })} disabled={!a.enabled} />
+      </div>
+      <div>
+        <ToggleRow title="Give roles back on rejoin" description="Members who leave and come back within 30 days get their roles back (never admin or moderator roles)" checked={a.restoreRoles} onChange={(v) => set({ restoreRoles: v })} disabled={!a.enabled} />
+        <ToggleRow title="Dehoist names" description="Remove symbols people put in front of their name to sit at the top of the member list" checked={a.dehoist} onChange={(v) => set({ dehoist: v })} disabled={!a.enabled} />
+        <div className="small faint mt">{last ? <>Last check {timeAgo(last.at)} ({last.reason}): {last.actions.length ? last.actions.join(" · ") : "nothing needed fixing"}</> : "No checks yet."}</div>
+      </div>
+    </div>
+    <SaveBar dirty={cfg.dirty} saving={cfg.saving} onSave={cfg.save} onReset={cfg.reset} />
+  </Card>;
 }

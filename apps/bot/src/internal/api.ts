@@ -1,4 +1,5 @@
 import { runSetup } from "../modules/setup.js";
+import { lastAutopilotRun, runAutopilot } from "../modules/autopilot.js";
 import { grant } from "../modules/welcome.js";
 import { backupCount, pullStatus, startPull } from "../modules/memberBackup.js";
 import { statsValues } from "../modules/channelTools.js";
@@ -166,6 +167,8 @@ route("POST", "/v1/guilds/:guildId/oauth-verified", async ({ guild, body }) => {
 });
 route("GET", "/v1/guilds/:guildId/member-pull", async ({ guild }) => ({ status: await pullStatus(guild.id), backups: await backupCount(guild.id) }));
 route("POST", "/v1/guilds/:guildId/member-pull", async ({ guild, body }) => startPull(guild, String(body.sourceGuildId)));
+route("POST", "/v1/guilds/:guildId/autopilot/run", async ({ guild }) => runAutopilot(guild, "run from the dashboard", true));
+route("GET", "/v1/guilds/:guildId/autopilot", async ({ guild }) => ({ last: await lastAutopilotRun(guild.id) }));
 route("POST", "/v1/guilds/:guildId/setup", async ({ guild, body }) => runSetup(guild, Array.isArray(body.packs) ? body.packs.map(String) : [], { dry: !!body.dry, actorId: body.actorId ? String(body.actorId) : null }));
 route("GET", "/v1/guilds/:guildId/stats-preview", async ({ guild }) => statsValues(guild));
 route("POST", "/v1/guilds/:guildId/commands/sync", async ({ guild }) => ({ registered: await syncGuildCommands(guild) }));

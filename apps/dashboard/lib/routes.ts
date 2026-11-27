@@ -239,6 +239,8 @@ r("POST", "setup", async (ctx) => {
   if (!b.dry) await audit(ctx, "setup.apply", b.packs.join(","));
   return json(out);
 });
+r("GET", "autopilot", async (ctx) => { requireLevel(ctx, "admin"); return json(await bot(`/guilds/${ctx.guildId}/autopilot`).catch(() => ({ last: null }))); });
+r("POST", "autopilot/run", async (ctx) => { requireLevel(ctx, "admin"); const out = await bot(`/guilds/${ctx.guildId}/autopilot/run`, { body: {}, timeoutMs: 120_000 }); await audit(ctx, "autopilot.run"); return json(out); });
 r("GET", "tools/summary", async (ctx) => {
   requireLevel(ctx, "admin");
   const g = ctx.guildId;

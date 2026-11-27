@@ -8,6 +8,8 @@ import {
   type ArchitectPlan, type PlanOp, type PlannedOverwrite, type GuildSnapshot, type SnapshotChannel, type TicketCategoryDef,
 } from "@moth/core";
 import { publishPanel } from "../modules/tickets.js";
+import { architectBusy } from "../modules/autopilot.js";
+import { idCmp, layoutPositions, type LayoutChannel } from "@moth/core";
 import { publishRoleMenu } from "../modules/roleMenus.js";
 import { publishVerification } from "../modules/welcome.js";
 import { invalidateAutomations } from "../modules/automation.js";
@@ -42,7 +44,7 @@ function validPerms(names: string[], botPerms: Readonly<PermissionsBitField>): P
 }
 
 /** Executes an architect plan against a guild. Ops are applied in order; failures are recorded and execution continues. */
-export async function executePlan(guild: Guild, plan: ArchitectPlan, opts: { excludeOpIds?: string[]; approveDestructive?: string[]; actorId: string; onProgress?: ApplyProgress; cleanMessages?: boolean }): Promise<ApplyResult> {
+async function executePlanInner(guild: Guild, plan: ArchitectPlan, opts: { excludeOpIds?: string[]; approveDestructive?: string[]; actorId: string; onProgress?: ApplyProgress; cleanMessages?: boolean }): Promise<ApplyResult> {
   const me = guild.members.me ?? await guild.members.fetchMe();
   const refs: Record<string, string> = { ...plan.refs };
   const exclude = new Set(opts.excludeOpIds ?? []);
@@ -225,13 +227,8 @@ export async function executePlan(guild: Guild, plan: ArchitectPlan, opts: { exc
         return;
       }
       case "channels.reorder": {
-        const counters = new Map<string | null, number>();
-        const positions = op.order.map((o) => {
-          const id = resolve(o.ref); const parent = o.parent ? resolve(o.parent) : null;
-          const n = counters.get(parent) ?? 0; counters.set(parent, n + 1);
-          return id && guild.channels.cache.has(id) ? { channel: id, position: n, parent: o.parent ? parent : undefined, lockPermissions: false } : null;
-        }).filter((x): x is NonNullable<typeof x> => !!x);
-        if (positions.length) await guild.channels.setPositions(positions);
+        const order = op.order.map((o) => ({ id: resolve(o.ref), parent: o.parent ? resolve(o.parent) : null })).filter((o): o is { id: string; parent: string | null } => !!o.id);
+        await applyLayout(guild, order);
         return;
       }
       case "message.post": {
@@ -351,4 +348,38 @@ export async function rollbackPlan(guild: Guild, result: ApplyResult, backup: Gu
   if (backup.verificationLevel !== guild.verificationLevel) await attempt("verification level", () => guild.setVerificationLevel(backup.verificationLevel, "MOTH Architect rollback"));
   await publishEvent("guild.updated", guild.id, { rollback: true });
   return { restored, errors };
+}
+
+
+/**
+ * Applies a layout so Discord shows exactly what the preview showed. Every
+ * channel in the server gets a unique position (Discord breaks ties by ID,
+ * which is why partial updates came out scrambled): categories in the given
+ * order with untouched ones after them, and inside each parent the listed
+ * channels first, then the rest in their current order. Verified afterwards
+ * and retried once.
+ */
+export async function applyLayout(guild: Guild, order: { id: string; parent: string | null }[]): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await guild.channels.fetch();
+    const all = [...guild.channels.cache.values()].filter((c) => !c.isThread()) as GuildChannel[];
+    const kind = (c: GuildChannel): LayoutChannel["kind"] => (c.type === ChannelType.GuildCategory ? "category" : c.type === ChannelType.GuildVoice || c.type === ChannelType.GuildStageVoice ? "voice" : "text");
+    const layout: LayoutChannel[] = all.map((c) => ({ id: c.id, kind: kind(c), parentId: c.parentId ?? null, position: c.rawPosition }));
+    const positions = layoutPositions(layout, order).map((p) => ("parent" in p ? { ...p, lockPermissions: false } : p));
+    const catOrder = positions.filter((p) => layout.find((c) => c.id === p.channel)?.kind === "category").map((p) => p.channel);
+    await guild.channels.setPositions(positions);
+
+    // Check Discord really shows that order.
+    await guild.channels.fetch();
+    const now = guild.channels.cache.filter((c) => c.type === ChannelType.GuildCategory).sort((a, b) => a.rawPosition - b.rawPosition || idCmp(a.id, b.id)).map((c) => c.id);
+    if (now.join() === catOrder.join()) return;
+  }
+}
+
+
+/** Applies an Architect plan (Autopilot pauses while this runs so they never fight over the layout). */
+export async function executePlan(guild: Guild, plan: ArchitectPlan, opts: Parameters<typeof executePlanInner>[2]): Promise<ApplyResult> {
+  architectBusy.add(guild.id);
+  try { return await executePlanInner(guild, plan, opts); }
+  finally { architectBusy.delete(guild.id); }
 }
