@@ -160,6 +160,10 @@ case "$cmd" in
       flags=$(printf '%s' "$app" | grep -o '"flags":[0-9]*' | head -1 | cut -d: -f2)
       (( (${flags:-0} & (1<<15 | 1<<14)) )) && ok "Server Members intent enabled" || bad "Enable 'Server Members Intent' on the Bot tab"
       (( (${flags:-0} & (1<<19 | 1<<18)) )) && ok "Message Content intent enabled" || bad "Enable 'Message Content Intent' on the Bot tab"
+      # Dashboard login and "Verify with Discord" both need this exact redirect in the Developer Portal.
+      want="$(env_get DASHBOARD_URL)"; want="${want%/}/api/auth/callback"
+      if printf '%s' "$app" | grep -qF "\"${want}\""; then ok "OAuth2 redirect registered ($want)"
+      else bad "OAuth2 redirect missing — add ${B}${want}${Z} in the Developer Portal → OAuth2 → Redirects (login and Verify fail with 'Invalid OAuth2 redirect_uri' until you do)"; fi
     fi
     dc ps --format '{{.Service}} {{.State}}' | while read -r s st; do [[ "$st" == running ]] && ok "$s running" || bad "$s $st"; done
     df -Pk . | awk 'NR==2 { if ($4 < 1048576) print "'"${Y}"'!'"${Z}"' Less than 1 GB free disk space" }'
